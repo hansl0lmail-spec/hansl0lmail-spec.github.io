@@ -15,52 +15,69 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <div class="page-glow page-glow-left" aria-hidden="true"></div>
+    <div class="page-glow page-glow-right" aria-hidden="true"></div>
     <main class="wrap">
-      <header class="head">
-      <h1>Shelly Status</h1>
-      <p class="hint">Als Web-App installierbar. Nach dem ersten erfolgreichen Laden ist die Oberflache offline verfugbar.</p>
-      </header>
+      <section class="toolbar-panel">
+        <form class="row" id="form" action="#" method="get">
+          <button type="button" id="btnConnect" class="primary-action">Start</button>
+        </form>
 
-      <form class="row" id="form" action="#" method="get">
-        <button type="button" id="btnConnect" style="flex: 1;">Start</button>
-      </form>
+        <div class="message-stack">
+          <p class="note" id="note" hidden></p>
+          <p class="err" id="err" hidden></p>
+        </div>
+      </section>
 
-      <p class="note" id="note" hidden></p>
-      <p class="err" id="err" hidden></p>
-
-      <section class="power-display" aria-live="polite">
-        <h2>Netzbezug Shelly 192.168.178.52</h2>
+      <section class="metrics-grid">
+      <section class="power-display power-card power-card-grid" aria-live="polite">
+        <div class="card-topline">
+          <span class="card-kicker">Shelly 192.168.178.52</span>
+          <span class="card-dot"></span>
+        </div>
+        <h2>Netzbezug</h2>
         <div class="power-value">
           <span id="powerValue">— —</span>
           <span class="power-unit">W</span>
         </div>
       </section>
 
-      <section class="power-display" aria-live="polite">
-        <h2>Solar Shelly 192.168.178.53</h2>
+      <section class="power-display power-card power-card-solar" aria-live="polite">
+        <div class="card-topline">
+          <span class="card-kicker">Shelly 192.168.178.53</span>
+          <span class="card-dot"></span>
+        </div>
+        <h2>Solar</h2>
         <div class="power-value">
           <span id="powerValue2">— —</span>
           <span class="power-unit">W</span>
         </div>
       </section>
 
-      <section class="power-display" aria-live="polite">
-        <h2>Verbrauch (Netzbezug - Solar)</h2>
+      <section class="power-display power-card power-card-load" aria-live="polite">
+        <div class="card-topline">
+          <span class="card-kicker">Berechnet live</span>
+          <span class="card-dot"></span>
+        </div>
+        <h2>Verbrauch</h2>
         <div class="power-value">
           <span id="powerValue3">— —</span>
           <span class="power-unit">W</span>
         </div>
       </section>
+      </section>
 
       <section class="chart-panel" aria-live="polite">
         <div class="chart-head">
-          <h2>Verlauf letzte 60 Sekunden</h2>
-          <p class="chart-subtitle" id="chartSummary">Warte auf Messwerte ...</p>
+          <div>
+            <p class="eyebrow chart-eyebrow">History</p>
+            <h2>Verlauf letzte 120 Sekunden</h2>
+          </div>
         </div>
         <div class="chart-legend" aria-hidden="true">
-          <span class="legend-item"><span class="legend-swatch legend-swatch-grid"></span>Netzbezug</span>
-          <span class="legend-item"><span class="legend-swatch legend-swatch-solar"></span>Solar</span>
-          <span class="legend-item"><span class="legend-swatch legend-swatch-load"></span>Verbrauch</span>
+          <span class="legend-item"><span class="legend-swatch legend-swatch-load"></span>Verbrauch <span class="legend-value" id="legendLoadValue">-- W</span></span>
+          <span class="legend-item"><span class="legend-swatch legend-swatch-grid"></span>Netzbezug <span class="legend-value" id="legendGridValue">-- W</span></span>
+          <span class="legend-item"><span class="legend-swatch legend-swatch-solar"></span>Solar <span class="legend-value" id="legendSolarValue">-- W</span></span>
         </div>
         <canvas id="powerChart" height="260"></canvas>
       </section>

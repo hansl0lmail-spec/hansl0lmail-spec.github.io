@@ -2,7 +2,7 @@
   "use strict";
 
   var WS_WAIT_MS = 15000;
-  var HISTORY_WINDOW_MS = 60000;
+  var HISTORY_WINDOW_MS = 120000;
   var SHELLY1_BASE_URL = "http://192.168.178.52";
   var SHELLY2_BASE_URL = "http://192.168.178.53";
 
@@ -21,7 +21,9 @@
   var powerValueEl2 = document.getElementById("powerValue2");
   var powerValueEl3 = document.getElementById("powerValue3");
   var chartCanvas = document.getElementById("powerChart");
-  var chartSummaryEl = document.getElementById("chartSummary");
+  var legendLoadValueEl = document.getElementById("legendLoadValue");
+  var legendGridValueEl = document.getElementById("legendGridValue");
+  var legendSolarValueEl = document.getElementById("legendSolarValue");
   var powerStatusEl2 = document.getElementById("powerStatus2");
   var updateIntervalId = null;
   var updateIntervalId2 = null;
@@ -71,20 +73,36 @@
     return Number(value || 0).toFixed(1) + " W";
   }
 
-  function updateChartSummary(now) {
-    if (!chartSummaryEl) return;
+  function getNiceStep(rawStep) {
+    if (!isFinite(rawStep) || rawStep <= 0) return 1;
 
-    if (!powerHistory.length) {
-      chartSummaryEl.textContent = "Warte auf Messwerte ...";
-      return;
+    var exponent = Math.floor(Math.log(rawStep) / Math.LN10);
+    var fraction = rawStep / Math.pow(10, exponent);
+    var niceFraction;
+
+    if (fraction <= 1) {
+      niceFraction = 1;
+    } else if (fraction <= 2) {
+      niceFraction = 2;
+    } else if (fraction <= 5) {
+      niceFraction = 5;
+    } else {
+      niceFraction = 10;
     }
 
-    var ageMs = now - powerHistory[powerHistory.length - 1].t;
-    chartSummaryEl.textContent =
-      "Netz " + formatWatts(netzbezug) +
-      " | Solar " + formatWatts(solar) +
-      " | Verbrauch " + formatWatts(netzbezug - solar) +
-      " | letzte Aktualisierung vor " + Math.max(0, Math.round(ageMs / 1000)) + " s";
+    return niceFraction * Math.pow(10, exponent);
+  }
+
+  function updateLegendValues() {
+    if (legendLoadValueEl) {
+      legendLoadValueEl.textContent = formatWatts(netzbezug - solar);
+    }
+    if (legendGridValueEl) {
+      legendGridValueEl.textContent = formatWatts(netzbezug);
+    }
+    if (legendSolarValueEl) {
+      legendSolarValueEl.textContent = formatWatts(solar);
+    }
   }
 
   function pruneHistory(now) {
@@ -136,7 +154,7 @@
 
     var now = Date.now();
     pruneHistory(now);
-    updateChartSummary(now);
+    updateLegendValues();
 
     var ctx = resizeCanvasToDisplaySize(chartCanvas);
     if (!ctx) return;
@@ -185,38 +203,65 @@
     minValue -= paddingValue;
     maxValue += paddingValue;
 
-    var range = maxValue - minValue;
+    minValue = Math.min(minValue, 0);
+    maxValue = Math.max(maxValue, 0);
+
     var lineCount = 4;
+    var niceStep = getNiceStep((maxValue - minValue) / lineCount);
+    var scaledMinValue = Math.floor(minValue / niceStep) * niceStep;
+    var scaledMaxValue = Math.ceil(maxValue / niceStep) * niceStep;
+
+    if (scaledMinValue === scaledMaxValue) {
+      scaledMaxValue = scaledMinValue + niceStep;
+    }
+
+    minValue = scaledMinValue;
+    maxValue = scaledMaxValue;
+
+    var range = maxValue - minValue;
 
     ctx.save();
     ctx.translate(paddingLeft, paddingTop);
 
+    var tickValues = [];
+    for (var tickValue = maxValue; tickValue >= minValue - (niceStep * 0.5); tickValue -= niceStep) {
+      tickValues.push(tickValue);
+    }
+
     ctx.strokeStyle = "rgba(139, 154, 171, 0.18)";
     ctx.lineWidth = 1;
-    for (i = 0; i <= lineCount; i += 1) {
-      var y = (plotHeight / lineCount) * i;
+    for (i = 0; i < tickValues.length; i += 1) {
+      var tickY = plotHeight - (((tickValues[i] - minValue) / range) * plotHeight);
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(plotWidth, y);
+      ctx.moveTo(0, tickY);
+      ctx.lineTo(plotWidth, tickY);
       ctx.stroke();
     }
+
+    var zeroY = plotHeight - (((0 - minValue) / range) * plotHeight);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(plotWidth, zeroY);
+    ctx.stroke();
 
     ctx.fillStyle = "#8b9aab";
     ctx.font = Math.round(11 * (window.devicePixelRatio || 1)) + "px sans-serif";
     ctx.textAlign = "left";
-    for (i = 0; i <= lineCount; i += 1) {
-      var labelValue = maxValue - ((range / lineCount) * i);
-      var labelY = (plotHeight / lineCount) * i;
+    for (i = 0; i < tickValues.length; i += 1) {
+      var labelValue = tickValues[i];
+      var labelY = plotHeight - (((labelValue - minValue) / range) * plotHeight);
       ctx.fillText(labelValue.toFixed(0) + " W", 6, Math.max(12, labelY - 4));
     }
 
-    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#58a6ff", "netzbezug");
-    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#f7b955", "solar");
-    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#7ee081", "verbrauch");
+    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#ff9f43", "netzbezug");
+    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#18a56b", "solar");
+    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#2f7cf6", "verbrauch");
 
     ctx.fillStyle = "#8b9aab";
     ctx.textAlign = "left";
-    ctx.fillText("-60 s", 0, plotHeight + 18);
+    ctx.fillText("-120 s", 0, plotHeight + 18);
     ctx.textAlign = "right";
     ctx.fillText("jetzt", plotWidth, plotHeight + 18);
 
