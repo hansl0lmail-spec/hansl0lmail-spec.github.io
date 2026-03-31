@@ -17,63 +17,91 @@
           <button type="button" id="btnConnect" class="primary-action">Start</button>
         </form>
 
-        <div class="message-stack">
+        <div class="toolbar-storage">
+          <div class="storage-copy">
+            <p class="storage-eyebrow">Verlaufsspeicher</p>
+            <p class="storage-meta" id="storageMeta">IndexedDB wird vorbereitet ...</p>
+          </div>
+          <div class="storage-actions">
+            <button type="button" class="ghost-action" id="btnClearHistory">Verlauf loeschen</button>
+          </div>
+        </div>
+
+        <div class="message-stack toolbar-messages">
           <p class="note" id="note" hidden></p>
           <p class="err" id="err" hidden></p>
         </div>
       </section>
 
-      <section class="metrics-grid">
-      <section class="power-display power-card power-card-grid" aria-live="polite">
-        <div class="card-topline">
-          <span class="card-kicker">Shelly 192.168.178.52</span>
-          <span class="card-dot"></span>
-        </div>
-        <h2>Netzbezug</h2>
-        <div class="power-value">
-          <span id="powerValue">— —</span>
-          <span class="power-unit">W</span>
-        </div>
+      <section class="tab-bar" aria-label="Ansichten">
+        <button type="button" class="tab-button is-active" data-tab-target="dashboard" aria-selected="true">Live</button>
+        <button type="button" class="tab-button" data-tab-target="history" aria-selected="false">Historie</button>
       </section>
 
-      <section class="power-display power-card power-card-solar" aria-live="polite">
-        <div class="card-topline">
-          <span class="card-kicker">Shelly 192.168.178.53</span>
-          <span class="card-dot"></span>
-        </div>
-        <h2>Solar</h2>
-        <div class="power-value">
-          <span id="powerValue2">— —</span>
-          <span class="power-unit">W</span>
-        </div>
+      <section data-tab-panel="dashboard">
+        <section class="metrics-grid">
+          <section class="power-display power-card power-card-grid" aria-live="polite">
+            <div class="card-topline">
+              <span class="card-kicker">Shelly 192.168.178.52</span>
+              <span class="card-dot"></span>
+            </div>
+            <h2>Netzbezug</h2>
+            <div class="power-value">
+              <span id="powerValue">-- --</span>
+              <span class="power-unit">W</span>
+            </div>
+          </section>
+
+          <section class="power-display power-card power-card-solar" aria-live="polite">
+            <div class="card-topline">
+              <span class="card-kicker">Shelly 192.168.178.53</span>
+              <span class="card-dot"></span>
+            </div>
+            <h2>Solar</h2>
+            <div class="power-value">
+              <span id="powerValue2">-- --</span>
+              <span class="power-unit">W</span>
+            </div>
+          </section>
+
+          <section class="power-display power-card power-card-load" aria-live="polite">
+            <div class="card-topline">
+              <span class="card-kicker">Berechnet live</span>
+              <span class="card-dot"></span>
+            </div>
+            <h2>Verbrauch</h2>
+            <div class="power-value">
+              <span id="powerValue3">-- --</span>
+              <span class="power-unit">W</span>
+            </div>
+          </section>
+        </section>
+
+        <section class="chart-panel" aria-live="polite">
+          <div class="chart-head">
+            <div>
+              <p class="eyebrow chart-eyebrow">History</p>
+              <h2>Verlauf letzte 120 Sekunden</h2>
+            </div>
+          </div>
+          <div class="chart-legend" aria-hidden="true">
+            <span class="legend-item"><span class="legend-swatch legend-swatch-load"></span>Verbrauch <span class="legend-value" id="legendLoadValue">-- W</span></span>
+            <span class="legend-item"><span class="legend-swatch legend-swatch-grid"></span>Netzbezug <span class="legend-value" id="legendGridValue">-- W</span></span>
+            <span class="legend-item"><span class="legend-swatch legend-swatch-solar"></span>Solar <span class="legend-value" id="legendSolarValue">-- W</span></span>
+          </div>
+          <canvas id="powerChart" height="260"></canvas>
+        </section>
       </section>
 
-      <section class="power-display power-card power-card-load" aria-live="polite">
-        <div class="card-topline">
-          <span class="card-kicker">Berechnet live</span>
-          <span class="card-dot"></span>
-        </div>
-        <h2>Verbrauch</h2>
-        <div class="power-value">
-          <span id="powerValue3">— —</span>
-          <span class="power-unit">W</span>
-        </div>
-      </section>
-      </section>
-
-      <section class="chart-panel" aria-live="polite">
+      <section class="history-panel" data-tab-panel="history" hidden>
         <div class="chart-head">
           <div>
-            <p class="eyebrow chart-eyebrow">History</p>
-            <h2>Verlauf letzte 120 Sekunden</h2>
+            <p class="eyebrow chart-eyebrow">Historie</p>
+            <h2>Gespeicherte Start-/Stop-Abschnitte</h2>
           </div>
         </div>
-        <div class="chart-legend" aria-hidden="true">
-          <span class="legend-item"><span class="legend-swatch legend-swatch-load"></span>Verbrauch <span class="legend-value" id="legendLoadValue">-- W</span></span>
-          <span class="legend-item"><span class="legend-swatch legend-swatch-grid"></span>Netzbezug <span class="legend-value" id="legendGridValue">-- W</span></span>
-          <span class="legend-item"><span class="legend-swatch legend-swatch-solar"></span>Solar <span class="legend-value" id="legendSolarValue">-- W</span></span>
-        </div>
-        <canvas id="powerChart" height="260"></canvas>
+        <p class="history-empty" id="historyEmpty">Noch keine gespeicherten Sessions.</p>
+        <div class="history-sessions" id="historySessions"></div>
       </section>
     </main>
     <script src="app.js" defer></script>
