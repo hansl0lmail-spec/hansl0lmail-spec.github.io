@@ -20,8 +20,11 @@
   var errEl = document.getElementById("err");
   var out = document.getElementById("out");
   var powerValueEl = document.getElementById("powerValue");
+  var powerEnergyValueEl = document.getElementById("powerEnergyValue");
   var powerValueEl2 = document.getElementById("powerValue2");
+  var powerEnergyValueEl2 = document.getElementById("powerEnergyValue2");
   var powerValueEl3 = document.getElementById("powerValue3");
+  var powerEnergyValueEl3 = document.getElementById("powerEnergyValue3");
   var chartCanvas = document.getElementById("powerChart");
   var legendLoadValueEl = document.getElementById("legendLoadValue");
   var legendGridValueEl = document.getElementById("legendGridValue");
@@ -49,7 +52,13 @@
   var historyDbPromise = null;
   var userClosed = false;
   var netzbezug = 0;
+  var netzbezugImportEnergyWh = 0;
+  var netzbezugExportEnergyWh = 0;
+  var prevTotalActWh = null;
+  var prevTotalActRetWh = null;
   var solar = 0;
+  var solarEnergyWh = 0;
+  var prevSolarTotalWh = null;
   var powerHistory = [];
   var currentSessionId = null;
   var sessionList = [];
@@ -106,10 +115,126 @@
   function updateVerbrauch() {
     var verbrauch = netzbezug - solar;
     if (powerValueEl3) powerValueEl3.textContent = verbrauch.toFixed(1);
+    if (powerEnergyValueEl) powerEnergyValueEl.textContent = "Energie: +" + formatEnergy(netzbezugImportEnergyWh) + " | -" + formatEnergy(netzbezugExportEnergyWh);
+    if (powerEnergyValueEl2) powerEnergyValueEl2.textContent = "Energie: " + formatEnergy(solarEnergyWh);
+    if (powerEnergyValueEl3) powerEnergyValueEl3.textContent = "Energie: " + formatEnergy(getLoadEnergyWh());
   }
 
   function formatWatts(value) {
     return Number(value || 0).toFixed(1) + " W";
+  }
+
+  function formatLegendValue(currentValue, averageValue) {
+    return formatWatts(currentValue) + " | Avg " + formatWatts(averageValue);
+  }
+
+  function formatEnergy(energyWh) {
+    var value = Number(energyWh);
+    if (!isFinite(value)) return "--";
+    if (Math.abs(value) >= 1000) return (value / 1000).toFixed(2) + " kWh";
+    return value.toFixed(2) + " Wh";
+  }
+
+  function getLoadEnergyWh() {
+    return Math.max(0, netzbezugImportEnergyWh + solarEnergyWh - netzbezugExportEnergyWh);
+  }
+
+  function formatLoadLegendValue(currentValue, averageValue) {
+    return formatLegendValue(currentValue, averageValue) + " | " + formatEnergy(getLoadEnergyWh());
+  }
+
+  function formatGridLegendValue(currentValue, averageValue) {
+    return formatLegendValue(currentValue, averageValue) + " | +" + formatEnergy(netzbezugImportEnergyWh) + " | -" + formatEnergy(netzbezugExportEnergyWh);
+  }
+
+  function formatSolarLegendValue(currentValue, averageValue) {
+    return formatLegendValue(currentValue, averageValue) + " | " + formatEnergy(solarEnergyWh);
+  }
+
+  function extractGridEnergyTotals(statusPayload) {
+    var energyStatus = statusPayload && statusPayload["emdata:0"];
+    if (!energyStatus || typeof energyStatus !== "object") return null;
+    if (energyStatus.total_act === undefined || energyStatus.total_act_ret === undefined) return null;
+    return {
+      totalActWh: Number(energyStatus.total_act),
+      totalActRetWh: Number(energyStatus.total_act_ret)
+    };
+  }
+
+  function getNetEnergyDelta(totalActWh, totalActRetWh) {
+    if (!isFinite(totalActWh) || !isFinite(totalActRetWh)) return null;
+
+    if (prevTotalActWh === null || prevTotalActRetWh === null) {
+      prevTotalActWh = totalActWh;
+      prevTotalActRetWh = totalActRetWh;
+      return { verbrauchWh: 0, einspeisungWh: 0 };
+    }
+
+    var deltaActWh = totalActWh - prevTotalActWh;
+    var deltaActRetWh = totalActRetWh - prevTotalActRetWh;
+
+    prevTotalActWh = totalActWh;
+    prevTotalActRetWh = totalActRetWh;
+
+    if (!isFinite(deltaActWh) || !isFinite(deltaActRetWh) || deltaActWh < 0 || deltaActRetWh < 0) {
+      return { verbrauchWh: 0, einspeisungWh: 0 };
+    }
+
+    var nettoWh = deltaActWh - deltaActRetWh;
+    if (nettoWh > 0) return { verbrauchWh: nettoWh, einspeisungWh: 0 };
+    if (nettoWh < 0) return { verbrauchWh: 0, einspeisungWh: Math.abs(nettoWh) };
+    return { verbrauchWh: 0, einspeisungWh: 0 };
+  }
+
+  function updateGridEnergyFromStatus(statusPayload) {
+    var totals = extractGridEnergyTotals(statusPayload);
+    var delta;
+    if (!totals) return;
+    delta = getNetEnergyDelta(totals.totalActWh, totals.totalActRetWh);
+    if (!delta) return;
+    netzbezugImportEnergyWh += delta.verbrauchWh;
+    netzbezugExportEnergyWh += delta.einspeisungWh;
+  }
+
+  function resetGridEnergyTracking() {
+    netzbezugImportEnergyWh = 0;
+    netzbezugExportEnergyWh = 0;
+    prevTotalActWh = null;
+    prevTotalActRetWh = null;
+  }
+
+  function extractSolarEnergyTotal(statusPayload) {
+    var solarStatus = statusPayload && statusPayload["pm1:0"];
+    if (!solarStatus || !solarStatus.aenergy || solarStatus.aenergy.total === undefined) return null;
+    return Number(solarStatus.aenergy.total);
+  }
+
+  function updateSolarEnergyFromStatus(statusPayload) {
+    var totalSolarWh = extractSolarEnergyTotal(statusPayload);
+    var deltaSolarWh;
+    if (!isFinite(totalSolarWh)) return;
+
+    if (prevSolarTotalWh === null) {
+      prevSolarTotalWh = totalSolarWh;
+      return;
+    }
+
+    deltaSolarWh = totalSolarWh - prevSolarTotalWh;
+    prevSolarTotalWh = totalSolarWh;
+    if (!isFinite(deltaSolarWh) || deltaSolarWh < 0) return;
+
+    solarEnergyWh += deltaSolarWh;
+  }
+
+  function resetSolarEnergyTracking() {
+    solarEnergyWh = 0;
+    prevSolarTotalWh = null;
+  }
+
+  function getStatusPayload(obj) {
+    if (obj && obj.result && typeof obj.result === "object") return obj.result;
+    if (obj && obj.params && typeof obj.params === "object") return obj.params;
+    return null;
   }
 
   function formatShortDateTime(timestamp) {
@@ -144,19 +269,52 @@
   }
 
   function updateLegendValues() {
-    if (legendLoadValueEl) legendLoadValueEl.textContent = formatWatts(netzbezug - solar);
-    if (legendGridValueEl) legendGridValueEl.textContent = formatWatts(netzbezug);
-    if (legendSolarValueEl) legendSolarValueEl.textContent = formatWatts(solar);
+    if (legendLoadValueEl) legendLoadValueEl.textContent = formatLoadLegendValue(netzbezug - solar, netzbezug - solar);
+    if (legendGridValueEl) legendGridValueEl.textContent = formatGridLegendValue(netzbezug, netzbezug);
+    if (legendSolarValueEl) legendSolarValueEl.textContent = formatSolarLegendValue(solar, solar);
   }
 
-  function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl) {
-    var latest = samples && samples.length ? samples[samples.length - 1] : null;
-    var load = latest ? latest.verbrauch : 0;
-    var grid = latest ? latest.netzbezug : 0;
-    var sun = latest ? latest.solar : 0;
-    if (loadEl) loadEl.textContent = formatWatts(load);
-    if (gridEl) gridEl.textContent = formatWatts(grid);
-    if (solarEl) solarEl.textContent = formatWatts(sun);
+  function getLegendStatsForSamples(samples, startTime, endTime) {
+    var relevantSamples = [];
+    var latest = null;
+    var totals = { load: 0, grid: 0, solar: 0 };
+
+    if (samples && samples.length) {
+      for (var i = 0; i < samples.length; i += 1) {
+        var sample = samples[i];
+        var inRange = true;
+        if (typeof startTime === "number" && sample.t < startTime) inRange = false;
+        if (typeof endTime === "number" && sample.t > endTime) inRange = false;
+        if (!inRange) continue;
+        relevantSamples.push(sample);
+      }
+    }
+
+    if (relevantSamples.length) {
+      latest = relevantSamples[relevantSamples.length - 1];
+      for (var j = 0; j < relevantSamples.length; j += 1) {
+        totals.load += Number(relevantSamples[j].verbrauch || 0);
+        totals.grid += Number(relevantSamples[j].netzbezug || 0);
+        totals.solar += Number(relevantSamples[j].solar || 0);
+      }
+    }
+
+    var count = relevantSamples.length || 1;
+    return {
+      load: latest ? latest.verbrauch : 0,
+      grid: latest ? latest.netzbezug : 0,
+      solar: latest ? latest.solar : 0,
+      avgLoad: relevantSamples.length ? totals.load / count : 0,
+      avgGrid: relevantSamples.length ? totals.grid / count : 0,
+      avgSolar: relevantSamples.length ? totals.solar / count : 0
+    };
+  }
+
+  function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl, startTime, endTime) {
+    var stats = getLegendStatsForSamples(samples, startTime, endTime);
+    if (loadEl) loadEl.textContent = formatLoadLegendValue(stats.load, stats.avgLoad);
+    if (gridEl) gridEl.textContent = formatGridLegendValue(stats.grid, stats.avgGrid);
+    if (solarEl) solarEl.textContent = formatSolarLegendValue(stats.solar, stats.avgSolar);
   }
 
   function supportsIndexedDb() {
@@ -495,7 +653,9 @@
   function renderChartFromSamples(canvas, samples, legendLoadEl, legendGridEl, legendSunEl, options) {
     options = options || {};
     if (!canvas) return;
-    updateLegendValuesForSamples(samples, legendLoadEl, legendGridEl, legendSunEl);
+    var legendStartTime = options.startTime;
+    var legendEndTime = options.endTime;
+    updateLegendValuesForSamples(samples, legendLoadEl, legendGridEl, legendSunEl, legendStartTime, legendEndTime);
 
     var ctx = resizeCanvasToDisplaySize(canvas);
     if (!ctx) return;
@@ -1023,12 +1183,16 @@
   }
   function applyMessage(text) {
     var obj;
+    var statusPayload;
     try {
       obj = JSON.parse(text);
     } catch (_) {
       setOut(text);
       return;
     }
+
+    statusPayload = getStatusPayload(obj);
+    updateGridEnergyFromStatus(statusPayload);
 
     if (obj.result && obj.result["em:0"] && obj.result["em:0"].total_act_power !== undefined) {
       netzbezug = Number(obj.result["em:0"].total_act_power);
@@ -1097,7 +1261,10 @@
     stopCurrentSession();
     netzbezug = 0;
     solar = 0;
+    resetGridEnergyTracking();
+    resetSolarEnergyTracking();
     updateVerbrauch();
+    updateLegendValues();
     renderChart();
     setConnectUi(false);
   }
@@ -1111,6 +1278,8 @@
     showError("");
     showNote("");
     powerHistory = [];
+    resetGridEnergyTracking();
+    resetSolarEnergyTracking();
     renderChart();
 
     startSession().then(function () {
@@ -1227,6 +1396,8 @@
       if (!text) return;
       try {
         var obj = JSON.parse(text);
+        var statusPayload = getStatusPayload(obj);
+        updateSolarEnergyFromStatus(statusPayload);
         if (obj.result && obj.result["pm1:0"] && obj.result["pm1:0"].apower !== undefined) {
           solar = Number(obj.result["pm1:0"].apower);
           powerValueEl2.textContent = solar.toFixed(1);
