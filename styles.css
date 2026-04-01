@@ -547,6 +547,32 @@ body {
 
 .session-actions {
   margin-top: 1rem;
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.session-action-btn {
+  min-width: auto;
+  min-height: 2.3rem;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.88rem;
+  box-shadow: none;
+}
+
+.session-delete {
+  background: linear-gradient(135deg, #a33a4d, #cb5468);
+}
+
+.history-head-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.history-import-btn {
+  min-width: auto;
+  min-height: 2.8rem;
+  padding: 0.6rem 1rem;
 }
 
 .chart-head {
@@ -618,6 +644,14 @@ body {
 }
 
 #powerChart {
+  width: 100%;
+  height: 320px;
+  display: block;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
+}
+
+#viewChart {
   width: 100%;
   height: 320px;
   display: block;
@@ -700,6 +734,10 @@ body {
   }
 
   #powerChart {
+    height: 260px;
+  }
+
+  #viewChart {
     height: 260px;
   }
 

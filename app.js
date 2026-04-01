@@ -13,7 +13,8 @@
 
   var form = document.getElementById("form");
   var btnConnect = document.getElementById("btnConnect");
-  var btnClearHistory = document.getElementById("btnClearHistory");
+  var btnImportJson = document.getElementById("btnImportJson");
+  var importJsonInput = document.getElementById("importJsonInput");
   var noteEl = document.getElementById("note");
   var errEl = document.getElementById("err");
   var out = document.getElementById("out");
@@ -24,6 +25,12 @@
   var legendLoadValueEl = document.getElementById("legendLoadValue");
   var legendGridValueEl = document.getElementById("legendGridValue");
   var legendSolarValueEl = document.getElementById("legendSolarValue");
+  var viewChartCanvas = document.getElementById("viewChart");
+  var viewLegendLoadValueEl = document.getElementById("viewLegendLoadValue");
+  var viewLegendGridValueEl = document.getElementById("viewLegendGridValue");
+  var viewLegendSolarValueEl = document.getElementById("viewLegendSolarValue");
+  var viewTitleEl = document.getElementById("viewTitle");
+  var viewSubtitleEl = document.getElementById("viewSubtitle");
   var storageMetaEl = document.getElementById("storageMeta");
   var historySessionsEl = document.getElementById("historySessions");
   var historyEmptyEl = document.getElementById("historyEmpty");
@@ -45,6 +52,12 @@
   var currentSessionId = null;
   var sessionList = [];
   var storageStats = { sessions: 0, samples: 0, lastStart: null };
+  var selectedViewSamples = [];
+  var viewWindowMs = HISTORY_WINDOW_MS;
+  var viewWindowStart = null;
+  var viewDragging = false;
+  var viewDragStartX = 0;
+  var viewDragStartWindow = 0;
 
   function appendNote(msg) {
     if (!msg || !noteEl) return;
@@ -115,6 +128,16 @@
     if (legendSolarValueEl) legendSolarValueEl.textContent = formatWatts(solar);
   }
 
+  function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl) {
+    var latest = samples && samples.length ? samples[samples.length - 1] : null;
+    var load = latest ? latest.verbrauch : 0;
+    var grid = latest ? latest.netzbezug : 0;
+    var sun = latest ? latest.solar : 0;
+    if (loadEl) loadEl.textContent = formatWatts(load);
+    if (gridEl) gridEl.textContent = formatWatts(grid);
+    if (solarEl) solarEl.textContent = formatWatts(sun);
+  }
+
   function supportsIndexedDb() {
     return typeof window.indexedDB !== "undefined";
   }
@@ -135,6 +158,12 @@
     tabPanels.forEach(function (panel) {
       panel.hidden = panel.getAttribute("data-tab-panel") !== tabName;
     });
+
+    if (tabName === "view") {
+      window.requestAnimationFrame(function () {
+        renderViewChart();
+      });
+    }
   }
 
   function updateStorageUi() {
@@ -148,7 +177,12 @@
       storageMetaEl.textContent = storageStats.sessions + " Sessions mit " + storageStats.samples + " Messpunkten. Letzter Start: " + formatShortDateTime(storageStats.lastStart) + ".";
     }
 
-    if (btnClearHistory) btnClearHistory.disabled = !supportsIndexedDb() || storageStats.sessions === 0;
+  }
+
+  function formatBytes(bytes) {
+    var value = Number(bytes || 0);
+    if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(2) + " MB";
+    return (value / 1024).toFixed(1) + " KB";
   }
 
   function openHistoryDb() {
@@ -234,11 +268,43 @@
   function loadSessions() {
     return openHistoryDb().then(function (db) {
       return new Promise(function (resolve, reject) {
-        var transaction = db.transaction(SESSIONS_STORE, "readonly");
+        var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readonly");
         var request = transaction.objectStore(SESSIONS_STORE).getAll();
+        var samplesRequest = transaction.objectStore(SAMPLES_STORE).getAll();
 
         request.onsuccess = function () {
-          sessionList = (request.result || []).sort(function (a, b) {
+          sessionList = (request.result || []);
+        };
+        samplesRequest.onsuccess = function () {
+          var samples = samplesRequest.result || [];
+          var samplesBySessionId = {};
+
+          samples.forEach(function (sample) {
+            if (!samplesBySessionId[sample.sessionId]) samplesBySessionId[sample.sessionId] = [];
+            samplesBySessionId[sample.sessionId].push(sample);
+          });
+
+          sessionList = sessionList.map(function (session) {
+            var sessionSamples = (samplesBySessionId[session.id] || []).map(function (sample) {
+              return {
+                t: sample.t,
+                netzbezug: sample.netzbezug,
+                solar: sample.solar,
+                verbrauch: sample.verbrauch
+              };
+            });
+            var payloadForSize = {
+              session: {
+                startedAt: session.startedAt,
+                stoppedAt: session.stoppedAt,
+                sampleCount: session.sampleCount || sessionSamples.length
+              },
+              samples: sessionSamples
+            };
+            var approxBytes = new Blob([JSON.stringify(payloadForSize)]).size;
+            session.storageBytes = approxBytes;
+            return session;
+          }).sort(function (a, b) {
             return (b.startedAt || 0) - (a.startedAt || 0);
           });
         };
@@ -261,6 +327,7 @@
       var isActive = !session.stoppedAt;
       var sampleCount = session.sampleCount || 0;
       var stopText = isActive ? "laeuft noch" : formatLongDateTime(session.stoppedAt);
+      var storageText = formatBytes(session.storageBytes || 0);
 
       article.className = "session-card";
       article.innerHTML =
@@ -273,11 +340,349 @@
           '<p><span>Stop</span><strong>' + stopText + '</strong></p>' +
           '<p><span>Dauer</span><strong>' + formatDuration(session.startedAt, session.stoppedAt) + '</strong></p>' +
           '<p><span>Messpunkte</span><strong>' + sampleCount + '</strong></p>' +
+          '<p><span>Speicher</span><strong>' + storageText + '</strong></p>' +
         '</div>' +
         '<div class="session-actions">' +
-          '<button type="button" class="secondary-action session-export" data-session-export="' + session.id + '"' + (sampleCount ? '' : ' disabled') + '>Abschnitt exportieren</button>' +
+          '<button type="button" class="secondary-action session-action-btn" data-session-view="' + session.id + '"' + (sampleCount ? '' : ' disabled') + '>View</button>' +
+          '<button type="button" class="secondary-action session-action-btn session-export" data-session-export="' + session.id + '"' + (sampleCount ? '' : ' disabled') + '>Export</button>' +
+          '<button type="button" class="secondary-action session-action-btn session-delete" data-session-delete="' + session.id + '">Loeschen</button>' +
         '</div>';
       historySessionsEl.appendChild(article);
+    });
+  }
+
+  function drawSeriesForRange(ctx, width, height, samples, startTime, endTime, minValue, range, color, key) {
+    if (!samples.length || endTime <= startTime) return;
+    ctx.beginPath();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = color;
+
+    for (var i = 0; i < samples.length; i += 1) {
+      var point = samples[i];
+      var x = ((point.t - startTime) / (endTime - startTime)) * width;
+      var y = height - (((point[key] - minValue) / range) * height);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  function formatAxisTime(timestamp) {
+    return new Intl.DateTimeFormat("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }).format(new Date(timestamp));
+  }
+
+  function getViewBounds() {
+    if (!selectedViewSamples.length) return null;
+    return {
+      min: selectedViewSamples[0].t,
+      max: selectedViewSamples[selectedViewSamples.length - 1].t
+    };
+  }
+
+  function clampViewWindowStart(start, boundsMin, boundsMax, windowMs) {
+    var maxStart = Math.max(boundsMin, boundsMax - windowMs);
+    if (start < boundsMin) return boundsMin;
+    if (start > maxStart) return maxStart;
+    return start;
+  }
+
+  function resetViewWindow() {
+    var bounds = getViewBounds();
+    viewWindowMs = HISTORY_WINDOW_MS;
+    if (!bounds) {
+      viewWindowStart = null;
+      return;
+    }
+    viewWindowStart = clampViewWindowStart(bounds.max - viewWindowMs, bounds.min, bounds.max, viewWindowMs);
+  }
+
+  function renderViewChart() {
+    var bounds = getViewBounds();
+    if (!bounds) {
+      renderChartFromSamples(viewChartCanvas, selectedViewSamples, viewLegendLoadValueEl, viewLegendGridValueEl, viewLegendSolarValueEl, { xTickLabels: true });
+      return;
+    }
+
+    var duration = Math.max(1, bounds.max - bounds.min);
+    var minWindow = 5000;
+    var maxWindow = Math.max(HISTORY_WINDOW_MS, duration);
+    viewWindowMs = Math.min(maxWindow, Math.max(minWindow, viewWindowMs));
+    if (viewWindowStart === null) viewWindowStart = bounds.max - viewWindowMs;
+    viewWindowStart = clampViewWindowStart(viewWindowStart, bounds.min, bounds.max, viewWindowMs);
+
+    renderChartFromSamples(viewChartCanvas, selectedViewSamples, viewLegendLoadValueEl, viewLegendGridValueEl, viewLegendSolarValueEl, {
+      startTime: viewWindowStart,
+      endTime: viewWindowStart + viewWindowMs,
+      xTickLabels: true
+    });
+  }
+
+  function renderChartFromSamples(canvas, samples, legendLoadEl, legendGridEl, legendSunEl, options) {
+    options = options || {};
+    if (!canvas) return;
+    updateLegendValuesForSamples(samples, legendLoadEl, legendGridEl, legendSunEl);
+
+    var ctx = resizeCanvasToDisplaySize(canvas);
+    if (!ctx) return;
+
+    var width = canvas.width;
+    var height = canvas.height;
+    var paddingTop = 14;
+    var paddingBottom = 22;
+    var paddingLeft = 8;
+    var paddingRight = 8;
+    var plotWidth = width - paddingLeft - paddingRight;
+    var plotHeight = height - paddingTop - paddingBottom;
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
+    ctx.fillRect(0, 0, width, height);
+
+    if (!samples.length) {
+      ctx.fillStyle = "#8b9aab";
+      ctx.font = Math.round(14 * (window.devicePixelRatio || 1)) + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Noch keine Messwerte", width / 2, height / 2);
+      return;
+    }
+
+    var minValue = Infinity;
+    var maxValue = -Infinity;
+    for (var i = 0; i < samples.length; i += 1) {
+      var sample = samples[i];
+      minValue = Math.min(minValue, sample.netzbezug, sample.solar, sample.verbrauch);
+      maxValue = Math.max(maxValue, sample.netzbezug, sample.solar, sample.verbrauch);
+    }
+
+    if (!isFinite(minValue) || !isFinite(maxValue)) {
+      minValue = 0;
+      maxValue = 1;
+    }
+    if (minValue === maxValue) {
+      minValue -= 1;
+      maxValue += 1;
+    }
+
+    var paddingValue = Math.max(10, (maxValue - minValue) * 0.15);
+    minValue = Math.min(minValue - paddingValue, 0);
+    maxValue = Math.max(maxValue + paddingValue, 0);
+
+    var niceStep = getNiceStep((maxValue - minValue) / 4);
+    minValue = Math.floor(minValue / niceStep) * niceStep;
+    maxValue = Math.ceil(maxValue / niceStep) * niceStep;
+    if (minValue === maxValue) maxValue = minValue + niceStep;
+
+    var range = maxValue - minValue;
+
+    ctx.save();
+    ctx.translate(paddingLeft, paddingTop);
+
+    var tickValues = [];
+    for (var tickValue = maxValue; tickValue >= minValue - (niceStep * 0.5); tickValue -= niceStep) {
+      tickValues.push(tickValue);
+    }
+
+    ctx.strokeStyle = "rgba(139, 154, 171, 0.18)";
+    ctx.lineWidth = 1;
+    for (i = 0; i < tickValues.length; i += 1) {
+      var tickY = plotHeight - (((tickValues[i] - minValue) / range) * plotHeight);
+      ctx.beginPath();
+      ctx.moveTo(0, tickY);
+      ctx.lineTo(plotWidth, tickY);
+      ctx.stroke();
+    }
+
+    var zeroY = plotHeight - (((0 - minValue) / range) * plotHeight);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(plotWidth, zeroY);
+    ctx.stroke();
+
+    ctx.fillStyle = "#8b9aab";
+    ctx.font = Math.round(11 * (window.devicePixelRatio || 1)) + "px sans-serif";
+    ctx.textAlign = "left";
+    for (i = 0; i < tickValues.length; i += 1) {
+      var labelValue = tickValues[i];
+      var labelY = plotHeight - (((labelValue - minValue) / range) * plotHeight);
+      ctx.fillText(labelValue.toFixed(0) + " W", 6, Math.max(12, labelY - 4));
+    }
+
+    var startTime = options.startTime;
+    var endTime = options.endTime;
+    if (typeof startTime !== "number" || typeof endTime !== "number") {
+      startTime = samples[0].t;
+      endTime = samples[samples.length - 1].t;
+    }
+    if (endTime === startTime) endTime = startTime + 1;
+    drawSeriesForRange(ctx, plotWidth, plotHeight, samples, startTime, endTime, minValue, range, "#ff9f43", "netzbezug");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, samples, startTime, endTime, minValue, range, "#18a56b", "solar");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, samples, startTime, endTime, minValue, range, "#2f7cf6", "verbrauch");
+
+    if (options.xTickLabels) {
+      var xTickCount = 4;
+      ctx.strokeStyle = "rgba(139, 154, 171, 0.12)";
+      ctx.fillStyle = "#8b9aab";
+      ctx.textAlign = "center";
+      for (i = 0; i <= xTickCount; i += 1) {
+        var ratio = i / xTickCount;
+        var x = ratio * plotWidth;
+        var t = startTime + ((endTime - startTime) * ratio);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, plotHeight);
+        ctx.stroke();
+        ctx.fillText(formatAxisTime(t), x, plotHeight + 18);
+      }
+    } else {
+      ctx.fillStyle = "#8b9aab";
+      ctx.textAlign = "left";
+      ctx.fillText(options.labelStart || "Start", 0, plotHeight + 18);
+      ctx.textAlign = "right";
+      ctx.fillText(options.labelEnd || "Ende", plotWidth, plotHeight + 18);
+    }
+    ctx.restore();
+  }
+
+  function setViewSessionMeta(session, samples) {
+    if (viewTitleEl) viewTitleEl.textContent = session ? "Abschnitt " + formatShortDateTime(session.startedAt) : "Kein Abschnitt ausgewaehlt";
+    if (viewSubtitleEl) {
+      if (!session) {
+        viewSubtitleEl.textContent = "Waehle in Historie einen Abschnitt oder importiere eine JSON-Datei.";
+      } else {
+        viewSubtitleEl.textContent = formatDuration(session.startedAt, session.stoppedAt) + " | " + (samples ? samples.length : 0) + " Messpunkte";
+      }
+    }
+  }
+
+  function loadSessionSamples(sessionId) {
+    return openHistoryDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readonly");
+        var sessionRequest = transaction.objectStore(SESSIONS_STORE).get(sessionId);
+        var samplesRequest = transaction.objectStore(SAMPLES_STORE).index("sessionId").getAll(sessionId);
+        transaction.oncomplete = function () {
+          if (!sessionRequest.result) {
+            reject(new Error("Session nicht gefunden."));
+            return;
+          }
+          var samples = (samplesRequest.result || []).map(function (sample) {
+            return { t: sample.t, netzbezug: sample.netzbezug, solar: sample.solar, verbrauch: sample.verbrauch };
+          }).sort(function (a, b) { return a.t - b.t; });
+          resolve({ session: sessionRequest.result, samples: samples });
+        };
+        transaction.onerror = function () { reject(transaction.error || new Error("Session-Daten konnten nicht geladen werden.")); };
+      });
+    });
+  }
+
+  function showSessionInView(sessionId) {
+    loadSessionSamples(sessionId).then(function (result) {
+      selectedViewSamples = result.samples;
+      resetViewWindow();
+      setViewSessionMeta(result.session, result.samples);
+      setActiveTab("view");
+    }).catch(function (err) {
+      showError("Abschnitt konnte nicht angezeigt werden: " + ((err && err.message) || String(err)));
+    });
+  }
+
+  function deleteSession(sessionId) {
+    openHistoryDb().then(function (db) {
+      var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readwrite");
+      var sessionsStore = transaction.objectStore(SESSIONS_STORE);
+      var samplesStore = transaction.objectStore(SAMPLES_STORE);
+      var index = samplesStore.index("sessionId");
+      var range = window.IDBKeyRange.only(sessionId);
+      index.openCursor(range).onsuccess = function (event) {
+        var cursor = event.target.result;
+        if (!cursor) return;
+        samplesStore.delete(cursor.primaryKey);
+        cursor.continue();
+      };
+      sessionsStore.delete(sessionId);
+
+      transaction.oncomplete = function () {
+        if (currentSessionId === sessionId) currentSessionId = null;
+        if (selectedViewSamples.length) {
+          selectedViewSamples = [];
+          resetViewWindow();
+          setViewSessionMeta(null, []);
+          renderViewChart();
+        }
+        loadStorageStats();
+        loadSessions();
+        showNote("Abschnitt wurde geloescht.");
+      };
+      transaction.onerror = function () { showError("Abschnitt konnte nicht geloescht werden."); };
+    }).catch(function (err) {
+      showError("Abschnitt konnte nicht geloescht werden: " + ((err && err.message) || String(err)));
+    });
+  }
+
+  function importSessionFromJsonText(jsonText) {
+    var payload;
+    try {
+      payload = JSON.parse(jsonText);
+    } catch (_) {
+      showError("JSON ist ungueltig.");
+      return;
+    }
+
+    if (!payload || !payload.session || !Array.isArray(payload.samples)) {
+      showError("JSON-Format wird nicht unterstuetzt.");
+      return;
+    }
+
+    var startedAt = Number(payload.session.startedAt || Date.now());
+    var stoppedAt = payload.session.stoppedAt ? Number(payload.session.stoppedAt) : null;
+    var normalizedSamples = payload.samples.map(function (sample) {
+      return {
+        t: Number(sample.t || Date.now()),
+        netzbezug: Number(sample.netzbezug || 0),
+        solar: Number(sample.solar || 0),
+        verbrauch: Number(sample.verbrauch || (Number(sample.netzbezug || 0) - Number(sample.solar || 0)))
+      };
+    }).sort(function (a, b) { return a.t - b.t; });
+
+    openHistoryDb().then(function (db) {
+      var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readwrite");
+      var sessionStore = transaction.objectStore(SESSIONS_STORE);
+      var sampleStore = transaction.objectStore(SAMPLES_STORE);
+      var sessionId;
+
+      sessionStore.add({
+        startedAt: startedAt,
+        stoppedAt: stoppedAt,
+        sampleCount: normalizedSamples.length
+      }).onsuccess = function (event) {
+        sessionId = event.target.result;
+        normalizedSamples.forEach(function (sample) {
+          sampleStore.add({
+            sessionId: sessionId,
+            t: sample.t,
+            netzbezug: sample.netzbezug,
+            solar: sample.solar,
+            verbrauch: sample.verbrauch
+          });
+        });
+      };
+
+      transaction.oncomplete = function () {
+        loadStorageStats();
+        loadSessions().then(function () {
+          showSessionInView(sessionId);
+          showNote("JSON importiert und im View angezeigt.");
+        });
+      };
+      transaction.onerror = function () { showError("JSON konnte nicht importiert werden."); };
+    }).catch(function (err) {
+      showError("JSON konnte nicht importiert werden: " + ((err && err.message) || String(err)));
     });
   }
 
@@ -422,28 +827,6 @@
     });
   }
 
-  function clearPersistedHistory() {
-    openHistoryDb().then(function (db) {
-      var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readwrite");
-      transaction.objectStore(SESSIONS_STORE).clear();
-      transaction.objectStore(SAMPLES_STORE).clear();
-
-      transaction.oncomplete = function () {
-        sessionList = [];
-        powerHistory = [];
-        currentSessionId = null;
-        storageStats = { sessions: 0, samples: 0, lastStart: null };
-        updateStorageUi();
-        renderSessions();
-        renderChart();
-        showNote("Alle gespeicherten Sessions wurden geloescht.");
-      };
-      transaction.onerror = function () { showError("Historie konnte nicht geloescht werden."); };
-    }).catch(function (err) {
-      showError("Historie konnte nicht geloescht werden: " + ((err && err.message) || String(err)));
-    });
-  }
-
   function pruneHistory(now) {
     var cutoff = now - HISTORY_WINDOW_MS;
     while (powerHistory.length && powerHistory[0].t < cutoff) {
@@ -482,108 +865,14 @@
 
   function renderChart() {
     if (!chartCanvas) return;
-
     var now = Date.now();
     pruneHistory(now);
-    updateLegendValues();
-
-    var ctx = resizeCanvasToDisplaySize(chartCanvas);
-    if (!ctx) return;
-
-    var width = chartCanvas.width;
-    var height = chartCanvas.height;
-    var paddingTop = 14;
-    var paddingBottom = 22;
-    var paddingLeft = 8;
-    var paddingRight = 8;
-    var plotWidth = width - paddingLeft - paddingRight;
-    var plotHeight = height - paddingTop - paddingBottom;
-
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
-    ctx.fillRect(0, 0, width, height);
-
-    if (!powerHistory.length) {
-      ctx.fillStyle = "#8b9aab";
-      ctx.font = Math.round(14 * (window.devicePixelRatio || 1)) + "px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("Noch keine Messwerte", width / 2, height / 2);
-      return;
-    }
-
-    var minValue = Infinity;
-    var maxValue = -Infinity;
-    for (var i = 0; i < powerHistory.length; i += 1) {
-      var sample = powerHistory[i];
-      minValue = Math.min(minValue, sample.netzbezug, sample.solar, sample.verbrauch);
-      maxValue = Math.max(maxValue, sample.netzbezug, sample.solar, sample.verbrauch);
-    }
-
-    if (!isFinite(minValue) || !isFinite(maxValue)) {
-      minValue = 0;
-      maxValue = 1;
-    }
-    if (minValue === maxValue) {
-      minValue -= 1;
-      maxValue += 1;
-    }
-
-    var paddingValue = Math.max(10, (maxValue - minValue) * 0.15);
-    minValue = Math.min(minValue - paddingValue, 0);
-    maxValue = Math.max(maxValue + paddingValue, 0);
-
-    var niceStep = getNiceStep((maxValue - minValue) / 4);
-    minValue = Math.floor(minValue / niceStep) * niceStep;
-    maxValue = Math.ceil(maxValue / niceStep) * niceStep;
-    if (minValue === maxValue) maxValue = minValue + niceStep;
-
-    var range = maxValue - minValue;
-
-    ctx.save();
-    ctx.translate(paddingLeft, paddingTop);
-
-    var tickValues = [];
-    for (var tickValue = maxValue; tickValue >= minValue - (niceStep * 0.5); tickValue -= niceStep) {
-      tickValues.push(tickValue);
-    }
-
-    ctx.strokeStyle = "rgba(139, 154, 171, 0.18)";
-    ctx.lineWidth = 1;
-    for (i = 0; i < tickValues.length; i += 1) {
-      var tickY = plotHeight - (((tickValues[i] - minValue) / range) * plotHeight);
-      ctx.beginPath();
-      ctx.moveTo(0, tickY);
-      ctx.lineTo(plotWidth, tickY);
-      ctx.stroke();
-    }
-
-    var zeroY = plotHeight - (((0 - minValue) / range) * plotHeight);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(0, zeroY);
-    ctx.lineTo(plotWidth, zeroY);
-    ctx.stroke();
-
-    ctx.fillStyle = "#8b9aab";
-    ctx.font = Math.round(11 * (window.devicePixelRatio || 1)) + "px sans-serif";
-    ctx.textAlign = "left";
-    for (i = 0; i < tickValues.length; i += 1) {
-      var labelValue = tickValues[i];
-      var labelY = plotHeight - (((labelValue - minValue) / range) * plotHeight);
-      ctx.fillText(labelValue.toFixed(0) + " W", 6, Math.max(12, labelY - 4));
-    }
-
-    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#ff9f43", "netzbezug");
-    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#18a56b", "solar");
-    drawSeries(ctx, plotWidth, plotHeight, now, minValue, range, "#2f7cf6", "verbrauch");
-
-    ctx.fillStyle = "#8b9aab";
-    ctx.textAlign = "left";
-    ctx.fillText("-120 s", 0, plotHeight + 18);
-    ctx.textAlign = "right";
-    ctx.fillText("jetzt", plotWidth, plotHeight + 18);
-    ctx.restore();
+    renderChartFromSamples(chartCanvas, powerHistory, legendLoadValueEl, legendGridValueEl, legendSolarValueEl, {
+      startTime: now - HISTORY_WINDOW_MS,
+      endTime: now,
+      labelStart: "-120 s",
+      labelEnd: "jetzt"
+    });
   }
 
   function recordHistoryPoint() {
@@ -880,12 +1169,6 @@
     connect();
   });
 
-  if (btnClearHistory) {
-    btnClearHistory.addEventListener("click", function () {
-      clearPersistedHistory();
-    });
-  }
-
   tabButtons.forEach(function (button) {
     button.addEventListener("click", function () {
       setActiveTab(button.getAttribute("data-tab-target"));
@@ -894,9 +1177,35 @@
 
   if (historySessionsEl) {
     historySessionsEl.addEventListener("click", function (event) {
+      var deleteButton = event.target.closest("[data-session-delete]");
+      if (deleteButton) {
+        deleteSession(Number(deleteButton.getAttribute("data-session-delete")));
+        return;
+      }
       var exportButton = event.target.closest("[data-session-export]");
-      if (!exportButton) return;
-      exportSessionAsJson(Number(exportButton.getAttribute("data-session-export")));
+      if (exportButton) {
+        exportSessionAsJson(Number(exportButton.getAttribute("data-session-export")));
+        return;
+      }
+      var viewButton = event.target.closest("[data-session-view]");
+      if (!viewButton) return;
+      showSessionInView(Number(viewButton.getAttribute("data-session-view")));
+    });
+  }
+
+  if (btnImportJson && importJsonInput) {
+    btnImportJson.addEventListener("click", function () {
+      importJsonInput.value = "";
+      importJsonInput.click();
+    });
+
+    importJsonInput.addEventListener("change", function () {
+      var file = importJsonInput.files && importJsonInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () { importSessionFromJsonText(String(reader.result || "")); };
+      reader.onerror = function () { showError("Datei konnte nicht gelesen werden."); };
+      reader.readAsText(file, "utf-8");
     });
   }
 
@@ -916,12 +1225,64 @@
   });
 
   window.addEventListener("resize", renderChart);
+  window.addEventListener("resize", function () {
+    renderViewChart();
+  });
+
+  if (viewChartCanvas) {
+    viewChartCanvas.addEventListener("wheel", function (event) {
+      if (!selectedViewSamples.length) return;
+      event.preventDefault();
+      var bounds = getViewBounds();
+      if (!bounds) return;
+
+      var rect = viewChartCanvas.getBoundingClientRect();
+      var ratio = rect.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0.5;
+      var oldWindow = viewWindowMs;
+      var factor = event.deltaY > 0 ? 1.2 : 0.8;
+      var duration = Math.max(1, bounds.max - bounds.min);
+      var minWindow = 5000;
+      var maxWindow = Math.max(HISTORY_WINDOW_MS, duration);
+      var newWindow = Math.min(maxWindow, Math.max(minWindow, oldWindow * factor));
+      var anchorTime = viewWindowStart + (oldWindow * ratio);
+      viewWindowMs = newWindow;
+      viewWindowStart = clampViewWindowStart(anchorTime - (newWindow * ratio), bounds.min, bounds.max, newWindow);
+      renderViewChart();
+    }, { passive: false });
+
+    viewChartCanvas.addEventListener("mousedown", function (event) {
+      if (event.button !== 0 || !selectedViewSamples.length) return;
+      viewDragging = true;
+      viewDragStartX = event.clientX;
+      viewDragStartWindow = viewWindowStart || 0;
+    });
+
+    window.addEventListener("mousemove", function (event) {
+      if (!viewDragging || !selectedViewSamples.length) return;
+      var bounds = getViewBounds();
+      if (!bounds) return;
+      var rect = viewChartCanvas.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      var deltaX = event.clientX - viewDragStartX;
+      var msPerPixel = viewWindowMs / rect.width;
+      var nextWindow = viewDragStartWindow - (deltaX * msPerPixel);
+      viewWindowStart = clampViewWindowStart(nextWindow, bounds.min, bounds.max, viewWindowMs);
+      renderViewChart();
+    });
+
+    window.addEventListener("mouseup", function () {
+      viewDragging = false;
+    });
+  }
 
   showNote("Shelly 192.168.178.52 + 192.168.178.53 fest konfiguriert.");
   hintIfHttpsPage();
   removeLegacyPwaArtifacts();
   setActiveTab("dashboard");
   updateStorageUi();
+  setViewSessionMeta(null, []);
+  resetViewWindow();
+  renderViewChart();
 
   if (supportsIndexedDb()) {
     loadStorageStats();

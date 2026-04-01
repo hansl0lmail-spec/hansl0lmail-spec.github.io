@@ -22,9 +22,6 @@
             <p class="storage-eyebrow">Verlaufsspeicher</p>
             <p class="storage-meta" id="storageMeta">IndexedDB wird vorbereitet ...</p>
           </div>
-          <div class="storage-actions">
-            <button type="button" class="ghost-action" id="btnClearHistory">Verlauf loeschen</button>
-          </div>
         </div>
 
         <div class="message-stack toolbar-messages">
@@ -36,6 +33,7 @@
       <section class="tab-bar" aria-label="Ansichten">
         <button type="button" class="tab-button is-active" data-tab-target="dashboard" aria-selected="true">Live</button>
         <button type="button" class="tab-button" data-tab-target="history" aria-selected="false">Historie</button>
+        <button type="button" class="tab-button" data-tab-target="view" aria-selected="false">View</button>
       </section>
 
       <section data-tab-panel="dashboard">
@@ -99,9 +97,29 @@
             <p class="eyebrow chart-eyebrow">Historie</p>
             <h2>Gespeicherte Start-/Stop-Abschnitte</h2>
           </div>
+          <div class="history-head-actions">
+            <button type="button" class="ghost-action history-import-btn" id="btnImportJson">JSON importieren</button>
+            <input type="file" id="importJsonInput" accept="application/json,.json" hidden />
+          </div>
         </div>
         <p class="history-empty" id="historyEmpty">Noch keine gespeicherten Sessions.</p>
         <div class="history-sessions" id="historySessions"></div>
+      </section>
+
+      <section class="chart-panel" data-tab-panel="view" hidden>
+        <div class="chart-head">
+          <div>
+            <p class="eyebrow chart-eyebrow">View</p>
+            <h2 id="viewTitle">Kein Abschnitt ausgewaehlt</h2>
+            <p class="chart-subtitle" id="viewSubtitle">Waehle in Historie einen Abschnitt oder importiere eine JSON-Datei.</p>
+          </div>
+        </div>
+        <div class="chart-legend" aria-hidden="true">
+          <span class="legend-item"><span class="legend-swatch legend-swatch-load"></span>Verbrauch <span class="legend-value" id="viewLegendLoadValue">-- W</span></span>
+          <span class="legend-item"><span class="legend-swatch legend-swatch-grid"></span>Netzbezug <span class="legend-value" id="viewLegendGridValue">-- W</span></span>
+          <span class="legend-item"><span class="legend-swatch legend-swatch-solar"></span>Solar <span class="legend-value" id="viewLegendSolarValue">-- W</span></span>
+        </div>
+        <canvas id="viewChart" height="260"></canvas>
       </section>
     </main>
     <script src="app.js" defer></script>
