@@ -310,6 +310,11 @@ body {
   margin-top: 1rem;
 }
 
+.view-metrics-grid {
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
 .power-display {
   margin: 0;
 }

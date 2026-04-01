@@ -113,16 +113,50 @@
       <section class="chart-panel" data-tab-panel="view" hidden>
         <div class="chart-head">
           <div>
-            <p class="eyebrow chart-eyebrow">View</p>
             <h2 id="viewTitle">Kein Abschnitt ausgewaehlt</h2>
             <p class="chart-subtitle" id="viewSubtitle">Waehle in Historie einen Abschnitt oder importiere eine JSON-Datei.</p>
           </div>
         </div>
-        <div class="chart-legend" aria-hidden="true">
-          <span class="legend-item"><span class="legend-swatch legend-swatch-load"></span>Verbrauch <span class="legend-value" id="viewLegendLoadValue">-- W</span></span>
-          <span class="legend-item"><span class="legend-swatch legend-swatch-grid"></span>Netzbezug <span class="legend-value" id="viewLegendGridValue">-- W</span></span>
-          <span class="legend-item"><span class="legend-swatch legend-swatch-solar"></span>Solar <span class="legend-value" id="viewLegendSolarValue">-- W</span></span>
-        </div>
+        <section class="metrics-grid view-metrics-grid">
+          <section class="power-display power-card power-card-grid" aria-live="polite">
+            <div class="card-topline">
+              <span class="card-kicker">Avg im Fenster</span>
+              <span class="card-dot"></span>
+            </div>
+            <h2>Netzbezug</h2>
+            <div class="power-value">
+              <span id="viewPowerValueGrid">-- --</span>
+              <span class="power-unit">W</span>
+            </div>
+            <p class="power-energy" id="viewPowerEnergyGrid">Energie: --</p>
+          </section>
+
+          <section class="power-display power-card power-card-solar" aria-live="polite">
+            <div class="card-topline">
+              <span class="card-kicker">Avg im Fenster</span>
+              <span class="card-dot"></span>
+            </div>
+            <h2>Solar</h2>
+            <div class="power-value">
+              <span id="viewPowerValueSolar">-- --</span>
+              <span class="power-unit">W</span>
+            </div>
+            <p class="power-energy" id="viewPowerEnergySolar">Energie: --</p>
+          </section>
+
+          <section class="power-display power-card power-card-load" aria-live="polite">
+            <div class="card-topline">
+              <span class="card-kicker">Avg im Fenster</span>
+              <span class="card-dot"></span>
+            </div>
+            <h2>Verbrauch</h2>
+            <div class="power-value">
+              <span id="viewPowerValueLoad">-- --</span>
+              <span class="power-unit">W</span>
+            </div>
+            <p class="power-energy" id="viewPowerEnergyLoad">Energie: --</p>
+          </section>
+        </section>
         <div class="view-chart-resize" id="viewChartResize">
           <canvas id="viewChart" height="260"></canvas>
           <div class="view-chart-handle" id="viewChartHandle" aria-hidden="true">

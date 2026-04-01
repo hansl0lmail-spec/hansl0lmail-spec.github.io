@@ -34,9 +34,12 @@
   var viewChartCanvas = document.getElementById("viewChart");
   var viewChartResizeEl = document.getElementById("viewChartResize");
   var viewChartHandleEl = document.getElementById("viewChartHandle");
-  var viewLegendLoadValueEl = document.getElementById("viewLegendLoadValue");
-  var viewLegendGridValueEl = document.getElementById("viewLegendGridValue");
-  var viewLegendSolarValueEl = document.getElementById("viewLegendSolarValue");
+  var viewPowerValueGridEl = document.getElementById("viewPowerValueGrid");
+  var viewPowerEnergyGridEl = document.getElementById("viewPowerEnergyGrid");
+  var viewPowerValueSolarEl = document.getElementById("viewPowerValueSolar");
+  var viewPowerEnergySolarEl = document.getElementById("viewPowerEnergySolar");
+  var viewPowerValueLoadEl = document.getElementById("viewPowerValueLoad");
+  var viewPowerEnergyLoadEl = document.getElementById("viewPowerEnergyLoad");
   var viewTitleEl = document.getElementById("viewTitle");
   var viewSubtitleEl = document.getElementById("viewSubtitle");
   var storageMetaEl = document.getElementById("storageMeta");
@@ -262,6 +265,25 @@
     return "Avg " + formatWatts(stats.avgSolar) + " | " + formatEnergy(stats.solarEnergyWh);
   }
 
+  function updateViewSummaryCards(stats) {
+    if (!stats) {
+      if (viewPowerValueGridEl) viewPowerValueGridEl.textContent = "-- --";
+      if (viewPowerEnergyGridEl) viewPowerEnergyGridEl.textContent = "Energie: --";
+      if (viewPowerValueSolarEl) viewPowerValueSolarEl.textContent = "-- --";
+      if (viewPowerEnergySolarEl) viewPowerEnergySolarEl.textContent = "Energie: --";
+      if (viewPowerValueLoadEl) viewPowerValueLoadEl.textContent = "-- --";
+      if (viewPowerEnergyLoadEl) viewPowerEnergyLoadEl.textContent = "Energie: --";
+      return;
+    }
+
+    if (viewPowerValueGridEl) viewPowerValueGridEl.textContent = Number(stats.avgGrid || 0).toFixed(1);
+    if (viewPowerEnergyGridEl) viewPowerEnergyGridEl.textContent = "Energie: +" + formatEnergy(stats.gridImportEnergyWh) + " | -" + formatEnergy(stats.gridExportEnergyWh);
+    if (viewPowerValueSolarEl) viewPowerValueSolarEl.textContent = Number(stats.avgSolar || 0).toFixed(1);
+    if (viewPowerEnergySolarEl) viewPowerEnergySolarEl.textContent = "Energie: " + formatEnergy(stats.solarEnergyWh);
+    if (viewPowerValueLoadEl) viewPowerValueLoadEl.textContent = Number(stats.avgLoad || 0).toFixed(1);
+    if (viewPowerEnergyLoadEl) viewPowerEnergyLoadEl.textContent = "Energie: " + formatEnergy(stats.loadEnergyWh);
+  }
+
   function extractGridEnergyTotals(statusPayload) {
     var energyStatus = statusPayload && statusPayload["emdata:0"];
     if (!energyStatus || typeof energyStatus !== "object") return null;
@@ -433,9 +455,7 @@
   function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl, startTime, endTime, mode) {
     var stats = getLegendStatsForSamples(samples, startTime, endTime);
     if (mode === "view") {
-      if (loadEl) loadEl.textContent = formatViewLoadLegendValue(stats);
-      if (gridEl) gridEl.textContent = formatViewGridLegendValue(stats);
-      if (solarEl) solarEl.textContent = formatViewSolarLegendValue(stats);
+      updateViewSummaryCards(stats);
       return;
     }
     if (loadEl) loadEl.textContent = formatLoadLegendValue(stats.load, stats.avgLoad);
@@ -747,7 +767,7 @@
   function renderViewChart() {
     var bounds = getViewBounds();
     if (!bounds) {
-      renderChartFromSamples(viewChartCanvas, selectedViewSamples, viewLegendLoadValueEl, viewLegendGridValueEl, viewLegendSolarValueEl, {
+      renderChartFromSamples(viewChartCanvas, selectedViewSamples, null, null, null, {
         xTickLabels: true,
         legendMode: "view"
       });
@@ -761,7 +781,7 @@
     if (viewWindowStart === null) viewWindowStart = bounds.max - viewWindowMs;
     viewWindowStart = clampViewWindowStart(viewWindowStart, bounds.min, bounds.max, viewWindowMs);
 
-    renderChartFromSamples(viewChartCanvas, selectedViewSamples, viewLegendLoadValueEl, viewLegendGridValueEl, viewLegendSolarValueEl, {
+    renderChartFromSamples(viewChartCanvas, selectedViewSamples, null, null, null, {
       startTime: viewWindowStart,
       endTime: viewWindowStart + viewWindowMs,
       valueMin: viewYMin,
