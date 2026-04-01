@@ -26,6 +26,7 @@
   var powerValueEl3 = document.getElementById("powerValue3");
   var powerEnergyValueEl3 = document.getElementById("powerEnergyValue3");
   var chartCanvas = document.getElementById("powerChart");
+  var viewEnergyChartCanvas = document.getElementById("viewEnergyChart");
   var liveChartResizeEl = document.getElementById("liveChartResize");
   var liveChartHandleEl = document.getElementById("liveChartHandle");
   var legendLoadValueEl = document.getElementById("legendLoadValue");
@@ -82,6 +83,15 @@
   var viewYDragStartMin = 0;
   var viewYDragStartMax = 0;
   var viewDragMode = "x";
+  var viewEnergyDragging = false;
+  var viewEnergyDragStartX = 0;
+  var viewEnergyDragStartY = 0;
+  var viewEnergyDragStartWindow = 0;
+  var viewEnergyYMin = null;
+  var viewEnergyYMax = null;
+  var viewEnergyYDragStartMin = 0;
+  var viewEnergyYDragStartMax = 0;
+  var viewEnergyDragMode = "x";
   var viewTouchPinching = false;
   var viewTouchDragging = false;
   var viewTouchDragMode = "x";
@@ -94,6 +104,18 @@
   var viewTouchDragStartWindow = 0;
   var viewTouchDragStartMin = 0;
   var viewTouchDragStartMax = 0;
+  var viewEnergyTouchPinching = false;
+  var viewEnergyTouchDragging = false;
+  var viewEnergyTouchDragMode = "x";
+  var viewEnergyTouchStartDistance = 0;
+  var viewEnergyTouchStartWindowMs = 0;
+  var viewEnergyTouchStartWindowStart = 0;
+  var viewEnergyTouchAnchorRatio = 0.5;
+  var viewEnergyTouchDragStartX = 0;
+  var viewEnergyTouchDragStartY = 0;
+  var viewEnergyTouchDragStartWindow = 0;
+  var viewEnergyTouchDragStartMin = 0;
+  var viewEnergyTouchDragStartMax = 0;
   var VIEW_Y_CONTROL_ZONE_PX = 52;
   var liveChartResizing = false;
   var liveChartStartY = 0;
@@ -452,6 +474,25 @@
     };
   }
 
+  function getSamplesForTimeRange(samples, startTime, endTime) {
+    var relevantSamples = [];
+    var baselineSample = null;
+
+    for (var i = 0; i < samples.length; i += 1) {
+      var sample = samples[i];
+      if (typeof startTime === "number" && sample.t <= startTime) baselineSample = sample;
+      if (typeof startTime === "number" && sample.t < startTime) continue;
+      if (typeof endTime === "number" && sample.t > endTime) continue;
+      relevantSamples.push(sample);
+    }
+
+    if (!baselineSample && relevantSamples.length) baselineSample = relevantSamples[0];
+    return {
+      baselineSample: baselineSample,
+      relevantSamples: relevantSamples
+    };
+  }
+
   function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl, startTime, endTime, mode) {
     var stats = getLegendStatsForSamples(samples, startTime, endTime);
     if (mode === "view") {
@@ -695,6 +736,184 @@
     ctx.stroke();
   }
 
+  function formatEnergyAxisValue(valueWh) {
+    if (Math.abs(valueWh) >= 1000) return (valueWh / 1000).toFixed(1) + " kWh";
+    return valueWh.toFixed(valueWh >= 100 ? 0 : 1) + " Wh";
+  }
+
+  function buildRelativeEnergyChartSamples(samples, startTime, endTime) {
+    var rangeData = getSamplesForTimeRange(samples, startTime, endTime);
+    var baselineSample = rangeData.baselineSample;
+    var relevantSamples = rangeData.relevantSamples;
+    var energySamples = [];
+    var baselineGridImportWh;
+    var baselineSolarWh;
+    var baselineLoadWh;
+
+    if (!baselineSample || !relevantSamples.length) return energySamples;
+
+    baselineGridImportWh = Number(readNumberOrNull(baselineSample.netzbezugImportEnergyWh) || 0);
+    baselineSolarWh = Number(readNumberOrNull(baselineSample.solarEnergyWh) || 0);
+    baselineLoadWh = Number(readNumberOrNull(baselineSample.verbrauchEnergyWh) || 0);
+
+    if (typeof startTime === "number" && relevantSamples[0].t > startTime) {
+      energySamples.push({
+        t: startTime,
+        gridImportEnergyWh: 0,
+        solarEnergyWh: 0,
+        loadEnergyWh: 0
+      });
+    }
+
+    for (var i = 0; i < relevantSamples.length; i += 1) {
+      var sample = relevantSamples[i];
+      energySamples.push({
+        t: sample.t,
+        gridImportEnergyWh: Math.max(0, Number(readNumberOrNull(sample.netzbezugImportEnergyWh) || baselineGridImportWh) - baselineGridImportWh),
+        solarEnergyWh: Math.max(0, Number(readNumberOrNull(sample.solarEnergyWh) || baselineSolarWh) - baselineSolarWh),
+        loadEnergyWh: Math.max(0, Number(readNumberOrNull(sample.verbrauchEnergyWh) || baselineLoadWh) - baselineLoadWh)
+      });
+    }
+
+    if (typeof endTime === "number" && energySamples.length && energySamples[energySamples.length - 1].t < endTime) {
+      energySamples.push({
+        t: endTime,
+        gridImportEnergyWh: energySamples[energySamples.length - 1].gridImportEnergyWh,
+        solarEnergyWh: energySamples[energySamples.length - 1].solarEnergyWh,
+        loadEnergyWh: energySamples[energySamples.length - 1].loadEnergyWh
+      });
+    }
+
+    return energySamples;
+  }
+
+  function renderEnergyChartFromSamples(canvas, samples, options) {
+    options = options || {};
+    if (!canvas) return;
+
+    var ctx = resizeCanvasToDisplaySize(canvas);
+    if (!ctx) return;
+
+    var width = canvas.width;
+    var height = canvas.height;
+    var paddingTop = 14;
+    var paddingBottom = 22;
+    var paddingLeft = 8;
+    var paddingRight = 8;
+    var plotWidth = width - paddingLeft - paddingRight;
+    var plotHeight = height - paddingTop - paddingBottom;
+    var startTime = typeof options.startTime === "number" ? options.startTime : (samples.length ? samples[0].t : Date.now());
+    var endTime = typeof options.endTime === "number" ? options.endTime : (samples.length ? samples[samples.length - 1].t : (startTime + 1));
+    var energySamples = buildRelativeEnergyChartSamples(samples, startTime, endTime);
+    var maxValue = 0;
+    var niceStep;
+    var range;
+    var hasManualYRange;
+    var minValue;
+    var tickValues = [];
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
+    ctx.fillRect(0, 0, width, height);
+
+    if (!energySamples.length) {
+      ctx.fillStyle = "#8b9aab";
+      ctx.font = Math.round(14 * (window.devicePixelRatio || 1)) + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Noch keine Energiedaten", width / 2, height / 2);
+      return;
+    }
+
+    for (var i = 0; i < energySamples.length; i += 1) {
+      var energyPoint = energySamples[i];
+      maxValue = Math.max(maxValue, energyPoint.gridImportEnergyWh, energyPoint.solarEnergyWh, energyPoint.loadEnergyWh);
+    }
+
+    if (!isFinite(maxValue) || maxValue <= 0) maxValue = 1;
+    maxValue *= 1.15;
+    niceStep = getNiceStep(maxValue / 5);
+    maxValue = Math.max(niceStep, Math.ceil(maxValue / niceStep) * niceStep);
+    hasManualYRange = typeof options.valueMin === "number" && typeof options.valueMax === "number";
+    minValue = hasManualYRange ? options.valueMin : 0;
+    maxValue = hasManualYRange ? options.valueMax : maxValue;
+    if (!isFinite(minValue) || !isFinite(maxValue) || minValue >= maxValue) {
+      minValue = 0;
+      maxValue = Math.max(niceStep, maxValue || 1);
+      hasManualYRange = false;
+    }
+    niceStep = getNiceStep((maxValue - minValue) / 5);
+    if (!hasManualYRange) {
+      minValue = 0;
+      maxValue = Math.max(niceStep, Math.ceil(maxValue / niceStep) * niceStep);
+    }
+    range = Math.max(1, maxValue - minValue);
+
+    ctx.save();
+    ctx.translate(paddingLeft, paddingTop);
+
+    var yZoneWidth = Math.min(plotWidth * 0.22, Math.max(28, VIEW_Y_CONTROL_ZONE_PX * (window.devicePixelRatio || 1)));
+    ctx.fillStyle = "rgba(47, 124, 246, 0.08)";
+    ctx.fillRect(0, 0, yZoneWidth, plotHeight);
+    ctx.strokeStyle = "rgba(47, 124, 246, 0.32)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(yZoneWidth, 0);
+    ctx.lineTo(yZoneWidth, plotHeight);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(139, 154, 171, 0.18)";
+    ctx.lineWidth = 1;
+    var firstYTick = Math.ceil(minValue / niceStep) * niceStep;
+    for (var tickValue = firstYTick; tickValue <= maxValue + (niceStep * 0.5); tickValue += niceStep) {
+      tickValues.push(tickValue);
+    }
+
+    for (var i = 0; i < tickValues.length; i += 1) {
+      var tickY = plotHeight - (((tickValues[i] - minValue) / range) * plotHeight);
+      ctx.beginPath();
+      ctx.moveTo(0, tickY);
+      ctx.lineTo(plotWidth, tickY);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#8b9aab";
+    ctx.font = Math.round(11 * (window.devicePixelRatio || 1)) + "px sans-serif";
+    ctx.textAlign = "left";
+    for (i = 0; i < tickValues.length; i += 1) {
+      tickY = plotHeight - (((tickValues[i] - minValue) / range) * plotHeight);
+      ctx.fillText(formatEnergyAxisValue(tickValues[i]), 6, Math.max(12, tickY - 4));
+    }
+
+    if (endTime === startTime) endTime = startTime + 1;
+    drawSeriesForRange(ctx, plotWidth, plotHeight, energySamples, startTime, endTime, minValue, range, "#ff9f43", "gridImportEnergyWh");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, energySamples, startTime, endTime, minValue, range, "#18a56b", "solarEnergyWh");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, energySamples, startTime, endTime, minValue, range, "#2f7cf6", "loadEnergyWh");
+
+    if (options.xTickLabels) {
+      var xTickStep = Math.max(500, getNiceStep((endTime - startTime) / 6));
+      ctx.strokeStyle = "rgba(139, 154, 171, 0.12)";
+      ctx.fillStyle = "#8b9aab";
+      ctx.textAlign = "center";
+      var firstXTick = Math.ceil(startTime / xTickStep) * xTickStep;
+      for (var t = firstXTick; t <= endTime + (xTickStep * 0.5); t += xTickStep) {
+        var x = ((t - startTime) / (endTime - startTime)) * plotWidth;
+        if (x < -1 || x > plotWidth + 1) continue;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, plotHeight);
+        ctx.stroke();
+        ctx.fillText(formatAxisTime(t), x, plotHeight + 18);
+      }
+    } else {
+      ctx.fillStyle = "#8b9aab";
+      ctx.textAlign = "left";
+      ctx.fillText(options.labelStart || "Start", 0, plotHeight + 18);
+      ctx.textAlign = "right";
+      ctx.fillText(options.labelEnd || "Ende", plotWidth, plotHeight + 18);
+    }
+    ctx.restore();
+  }
+
   function formatAxisTime(timestamp) {
     return new Intl.DateTimeFormat("de-DE", {
       hour: "2-digit",
@@ -745,11 +964,42 @@
     viewYMax = Math.max(autoMax + autoPadding, 0);
   }
 
-  function isInViewYControlZone(clientX) {
-    if (!viewChartCanvas) return false;
-    var rect = viewChartCanvas.getBoundingClientRect();
+  function isInCanvasYControlZone(canvas, clientX) {
+    if (!canvas) return false;
+    var rect = canvas.getBoundingClientRect();
     if (!rect.width) return false;
     return (clientX - rect.left) <= VIEW_Y_CONTROL_ZONE_PX;
+  }
+
+  function isInViewYControlZone(clientX) {
+    return isInCanvasYControlZone(viewChartCanvas, clientX);
+  }
+
+  function ensureViewEnergyYRangeInitialized() {
+    if (typeof viewEnergyYMin === "number" && typeof viewEnergyYMax === "number") return;
+
+    var bounds = getViewBounds();
+    var startTime = bounds ? bounds.min : null;
+    var endTime = bounds ? bounds.max : null;
+    if (bounds && viewWindowStart !== null) {
+      startTime = viewWindowStart;
+      endTime = viewWindowStart + viewWindowMs;
+    }
+
+    var energySamples = buildRelativeEnergyChartSamples(selectedViewSamples, startTime, endTime);
+    var autoMax = 0;
+    for (var i = 0; i < energySamples.length; i += 1) {
+      autoMax = Math.max(
+        autoMax,
+        Number(energySamples[i].gridImportEnergyWh || 0),
+        Number(energySamples[i].solarEnergyWh || 0),
+        Number(energySamples[i].loadEnergyWh || 0)
+      );
+    }
+
+    if (!isFinite(autoMax) || autoMax <= 0) autoMax = 1;
+    viewEnergyYMin = 0;
+    viewEnergyYMax = autoMax + Math.max(1, autoMax * 0.15);
   }
 
   function resetViewWindow() {
@@ -757,6 +1007,8 @@
     viewWindowMs = HISTORY_WINDOW_MS;
     viewYMin = null;
     viewYMax = null;
+    viewEnergyYMin = null;
+    viewEnergyYMax = null;
     if (!bounds) {
       viewWindowStart = null;
       return;
@@ -768,8 +1020,12 @@
     var bounds = getViewBounds();
     if (!bounds) {
       renderChartFromSamples(viewChartCanvas, selectedViewSamples, null, null, null, {
+        showYControlZone: true,
         xTickLabels: true,
         legendMode: "view"
+      });
+      renderEnergyChartFromSamples(viewEnergyChartCanvas, selectedViewSamples, {
+        xTickLabels: true
       });
       return;
     }
@@ -784,10 +1040,18 @@
     renderChartFromSamples(viewChartCanvas, selectedViewSamples, null, null, null, {
       startTime: viewWindowStart,
       endTime: viewWindowStart + viewWindowMs,
+      showYControlZone: true,
       valueMin: viewYMin,
       valueMax: viewYMax,
       xTickLabels: true,
       legendMode: "view"
+    });
+    renderEnergyChartFromSamples(viewEnergyChartCanvas, selectedViewSamples, {
+      startTime: viewWindowStart,
+      endTime: viewWindowStart + viewWindowMs,
+      valueMin: viewEnergyYMin,
+      valueMax: viewEnergyYMax,
+      xTickLabels: true
     });
   }
 
@@ -796,6 +1060,7 @@
     if (!canvas) return;
     var legendStartTime = options.startTime;
     var legendEndTime = options.endTime;
+    var showYControlZone = !!options.showYControlZone;
     updateLegendValuesForSamples(samples, legendLoadEl, legendGridEl, legendSunEl, legendStartTime, legendEndTime, options.legendMode);
 
     var ctx = resizeCanvasToDisplaySize(canvas);
@@ -869,16 +1134,18 @@
     ctx.save();
     ctx.translate(paddingLeft, paddingTop);
 
-    // Left control strip for Y-axis interactions (offset/range).
-    var yZoneWidth = Math.min(plotWidth * 0.22, Math.max(28, VIEW_Y_CONTROL_ZONE_PX * (window.devicePixelRatio || 1)));
-    ctx.fillStyle = "rgba(47, 124, 246, 0.08)";
-    ctx.fillRect(0, 0, yZoneWidth, plotHeight);
-    ctx.strokeStyle = "rgba(47, 124, 246, 0.32)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(yZoneWidth, 0);
-    ctx.lineTo(yZoneWidth, plotHeight);
-    ctx.stroke();
+    if (showYControlZone) {
+      // Left control strip for Y-axis interactions (offset/range).
+      var yZoneWidth = Math.min(plotWidth * 0.22, Math.max(28, VIEW_Y_CONTROL_ZONE_PX * (window.devicePixelRatio || 1)));
+      ctx.fillStyle = "rgba(47, 124, 246, 0.08)";
+      ctx.fillRect(0, 0, yZoneWidth, plotHeight);
+      ctx.strokeStyle = "rgba(47, 124, 246, 0.32)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(yZoneWidth, 0);
+      ctx.lineTo(yZoneWidth, plotHeight);
+      ctx.stroke();
+    }
 
     var tickValues = [];
     var firstYTick = Math.ceil(minValue / niceStep) * niceStep;
@@ -1369,7 +1636,6 @@
   }
 
   function renderChart() {
-    if (!chartCanvas) return;
     var now = Date.now();
     pruneHistory(now);
     renderChartFromSamples(chartCanvas, powerHistory, legendLoadValueEl, legendGridValueEl, legendSolarValueEl, {
@@ -2038,6 +2304,191 @@
 
     window.addEventListener("mouseup", function () {
       viewDragging = false;
+    });
+  }
+
+  if (viewEnergyChartCanvas) {
+    viewEnergyChartCanvas.addEventListener("wheel", function (event) {
+      if (!selectedViewSamples.length) return;
+      event.preventDefault();
+      var bounds = getViewBounds();
+      if (!bounds) return;
+
+      var rect = viewEnergyChartCanvas.getBoundingClientRect();
+      var inYZone = isInCanvasYControlZone(viewEnergyChartCanvas, event.clientX);
+      var ratio = rect.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0.5;
+      if (inYZone) {
+        ensureViewEnergyYRangeInitialized();
+        var currentYRange = Math.max(1, viewEnergyYMax - viewEnergyYMin);
+        var yFactor = event.deltaY > 0 ? 1.12 : 0.88;
+        var nextYRange = Math.max(1, currentYRange * yFactor);
+        var centerY = (viewEnergyYMin + viewEnergyYMax) / 2;
+        viewEnergyYMin = centerY - (nextYRange / 2);
+        viewEnergyYMax = centerY + (nextYRange / 2);
+        renderViewChart();
+        return;
+      }
+      var oldWindow = viewWindowMs;
+      var factor = event.deltaY > 0 ? 1.2 : 0.8;
+      var duration = Math.max(1, bounds.max - bounds.min);
+      var minWindow = 5000;
+      var maxWindow = Math.max(HISTORY_WINDOW_MS, duration);
+      var newWindow = Math.min(maxWindow, Math.max(minWindow, oldWindow * factor));
+      var anchorTime = viewWindowStart + (oldWindow * ratio);
+      viewWindowMs = newWindow;
+      viewWindowStart = clampViewWindowStart(anchorTime - (newWindow * ratio), bounds.min, bounds.max, newWindow);
+      renderViewChart();
+    }, { passive: false });
+
+    viewEnergyChartCanvas.addEventListener("mousedown", function (event) {
+      if (event.button !== 0 || !selectedViewSamples.length) return;
+      viewEnergyDragging = true;
+      viewEnergyDragMode = isInCanvasYControlZone(viewEnergyChartCanvas, event.clientX) ? "y" : "x";
+      viewEnergyDragStartX = event.clientX;
+      viewEnergyDragStartY = event.clientY;
+      viewEnergyDragStartWindow = viewWindowStart || 0;
+      ensureViewEnergyYRangeInitialized();
+      viewEnergyYDragStartMin = viewEnergyYMin;
+      viewEnergyYDragStartMax = viewEnergyYMax;
+    });
+
+    viewEnergyChartCanvas.addEventListener("touchstart", function (event) {
+      if (!selectedViewSamples.length || !event.touches || !event.touches.length) return;
+      var bounds = getViewBounds();
+      if (!bounds) return;
+
+      if (event.touches.length === 1) {
+        event.preventDefault();
+        viewEnergyTouchPinching = false;
+        viewEnergyTouchDragging = true;
+        viewEnergyTouchDragMode = isInCanvasYControlZone(viewEnergyChartCanvas, event.touches[0].clientX) ? "y" : "x";
+        viewEnergyTouchDragStartX = event.touches[0].clientX;
+        viewEnergyTouchDragStartY = event.touches[0].clientY;
+        viewEnergyTouchDragStartWindow = viewWindowStart === null ? (bounds.max - viewWindowMs) : viewWindowStart;
+        ensureViewEnergyYRangeInitialized();
+        viewEnergyTouchDragStartMin = viewEnergyYMin;
+        viewEnergyTouchDragStartMax = viewEnergyYMax;
+        return;
+      }
+
+      if (event.touches.length !== 2) return;
+      event.preventDefault();
+      viewEnergyTouchDragging = false;
+      var rect = viewEnergyChartCanvas.getBoundingClientRect();
+      var touchA = event.touches[0];
+      var touchB = event.touches[1];
+      var distance = getTouchDistance(touchA, touchB);
+      if (!isFinite(distance) || distance <= 0) return;
+
+      var centerX = getTouchCenterX(touchA, touchB);
+      var pinchInYZone = isInCanvasYControlZone(viewEnergyChartCanvas, centerX);
+      viewEnergyTouchAnchorRatio = rect.width > 0 ? Math.min(1, Math.max(0, (centerX - rect.left) / rect.width)) : 0.5;
+      viewEnergyTouchDragMode = pinchInYZone ? "y" : "x";
+      if (pinchInYZone) {
+        ensureViewEnergyYRangeInitialized();
+        viewEnergyTouchDragStartMin = viewEnergyYMin;
+        viewEnergyTouchDragStartMax = viewEnergyYMax;
+      }
+      viewEnergyTouchPinching = true;
+      viewEnergyTouchStartDistance = distance;
+      viewEnergyTouchStartWindowMs = viewWindowMs;
+      viewEnergyTouchStartWindowStart = viewWindowStart === null ? bounds.max - viewWindowMs : viewWindowStart;
+    }, { passive: false });
+
+    viewEnergyChartCanvas.addEventListener("touchmove", function (event) {
+      if (viewEnergyTouchDragging && !viewEnergyTouchPinching && event.touches && event.touches.length === 1) {
+        event.preventDefault();
+        var bounds = getViewBounds();
+        if (!bounds) return;
+        var rect = viewEnergyChartCanvas.getBoundingClientRect();
+        if (viewEnergyTouchDragMode === "x" && rect.width > 0) {
+          var deltaX = event.touches[0].clientX - viewEnergyTouchDragStartX;
+          var msPerPixel = viewWindowMs / rect.width;
+          var nextWindow = viewEnergyTouchDragStartWindow - (deltaX * msPerPixel);
+          viewWindowStart = clampViewWindowStart(nextWindow, bounds.min, bounds.max, viewWindowMs);
+        }
+        if (viewEnergyTouchDragMode === "y" && rect.height > 0) {
+          ensureViewEnergyYRangeInitialized();
+          var deltaY = event.touches[0].clientY - viewEnergyTouchDragStartY;
+          var valueRange = Math.max(1, viewEnergyTouchDragStartMax - viewEnergyTouchDragStartMin);
+          var valuePerPixel = valueRange / rect.height;
+          var valueShift = deltaY * valuePerPixel;
+          var center = ((viewEnergyTouchDragStartMin + viewEnergyTouchDragStartMax) / 2) + valueShift;
+          viewEnergyYMin = center - (valueRange / 2);
+          viewEnergyYMax = center + (valueRange / 2);
+        }
+        renderViewChart();
+        return;
+      }
+
+      if (!viewEnergyTouchPinching || !selectedViewSamples.length || !event.touches || event.touches.length !== 2) return;
+      event.preventDefault();
+      var bounds = getViewBounds();
+      if (!bounds) return;
+
+      var distance = getTouchDistance(event.touches[0], event.touches[1]);
+      if (!isFinite(distance) || distance <= 0 || viewEnergyTouchStartDistance <= 0) return;
+
+      var pinchRatio = viewEnergyTouchStartDistance / distance;
+      if (viewEnergyTouchDragMode === "y") {
+        ensureViewEnergyYRangeInitialized();
+        var startRangeY = Math.max(1, viewEnergyTouchDragStartMax - viewEnergyTouchDragStartMin);
+        var newRangeY = Math.max(1, startRangeY * pinchRatio);
+        var centerY = (viewEnergyTouchDragStartMin + viewEnergyTouchDragStartMax) / 2;
+        viewEnergyYMin = centerY - (newRangeY / 2);
+        viewEnergyYMax = centerY + (newRangeY / 2);
+      } else {
+        var duration = Math.max(1, bounds.max - bounds.min);
+        var minWindow = 5000;
+        var maxWindow = Math.max(HISTORY_WINDOW_MS, duration);
+        var newWindow = Math.min(maxWindow, Math.max(minWindow, viewEnergyTouchStartWindowMs * pinchRatio));
+        var anchorTime = viewEnergyTouchStartWindowStart + (viewEnergyTouchStartWindowMs * viewEnergyTouchAnchorRatio);
+        viewWindowMs = newWindow;
+        viewWindowStart = clampViewWindowStart(anchorTime - (newWindow * viewEnergyTouchAnchorRatio), bounds.min, bounds.max, newWindow);
+      }
+      renderViewChart();
+    }, { passive: false });
+
+    viewEnergyChartCanvas.addEventListener("touchend", function () {
+      viewEnergyTouchDragging = false;
+      if (!viewEnergyTouchPinching) return;
+      viewEnergyTouchPinching = false;
+      viewEnergyTouchStartDistance = 0;
+    });
+
+    viewEnergyChartCanvas.addEventListener("touchcancel", function () {
+      viewEnergyTouchDragging = false;
+      if (!viewEnergyTouchPinching) return;
+      viewEnergyTouchPinching = false;
+      viewEnergyTouchStartDistance = 0;
+    });
+
+    window.addEventListener("mousemove", function (event) {
+      if (!viewEnergyDragging || !selectedViewSamples.length) return;
+      var bounds = getViewBounds();
+      if (!bounds) return;
+      var rect = viewEnergyChartCanvas.getBoundingClientRect();
+      if (viewEnergyDragMode === "x") {
+        if (rect.width <= 0) return;
+        var deltaX = event.clientX - viewEnergyDragStartX;
+        var msPerPixel = viewWindowMs / rect.width;
+        var nextWindow = viewEnergyDragStartWindow - (deltaX * msPerPixel);
+        viewWindowStart = clampViewWindowStart(nextWindow, bounds.min, bounds.max, viewWindowMs);
+      } else if (rect.height > 0) {
+        ensureViewEnergyYRangeInitialized();
+        var deltaY = event.clientY - viewEnergyDragStartY;
+        var valueRange = Math.max(1, viewEnergyYDragStartMax - viewEnergyYDragStartMin);
+        var valuePerPixel = valueRange / rect.height;
+        var valueShift = deltaY * valuePerPixel;
+        var center = ((viewEnergyYDragStartMin + viewEnergyYDragStartMax) / 2) + valueShift;
+        viewEnergyYMin = center - (valueRange / 2);
+        viewEnergyYMax = center + (valueRange / 2);
+      }
+      renderViewChart();
+    });
+
+    window.addEventListener("mouseup", function () {
+      viewEnergyDragging = false;
     });
   }
 
