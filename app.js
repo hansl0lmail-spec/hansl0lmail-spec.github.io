@@ -1168,6 +1168,99 @@
       appendNote("Verlauf konnte nicht gespeichert werden: " + ((err && err.message) || String(err)));
     });
   }
+
+  function getSessionExportFilename(session) {
+    return "shelly-session-" + session.id + "-" + new Date(session.startedAt).toISOString().replace(/[:.]/g, "-") + ".json";
+  }
+
+  function buildSessionExportPayload(session, samples) {
+    return {
+      exportedAt: new Date().toISOString(),
+      source: "Shelly Status",
+      session: {
+        id: session.id,
+        startedAt: session.startedAt,
+        stoppedAt: session.stoppedAt,
+        sampleCount: session.sampleCount || samples.length
+      },
+      samples: samples.map(function (sample) {
+        return {
+          t: sample.t,
+          netzbezug: sample.netzbezug,
+          solar: sample.solar,
+          verbrauch: sample.verbrauch,
+          netzbezugImportEnergyWh: sample.netzbezugImportEnergyWh,
+          netzbezugExportEnergyWh: sample.netzbezugExportEnergyWh,
+          solarEnergyWh: sample.solarEnergyWh,
+          verbrauchEnergyWh: sample.verbrauchEnergyWh
+        };
+      })
+    };
+  }
+
+  function isUserCancelledExport(err) {
+    return !!(err && (err.name === "AbortError" || err.name === "NotAllowedError"));
+  }
+
+  function shouldUseShareSheetForExport() {
+    var ua = navigator.userAgent || "";
+    var platform = navigator.platform || "";
+    var maxTouchPoints = navigator.maxTouchPoints || 0;
+    var isAppleMobile = /iPad|iPhone|iPod/i.test(ua);
+    var isiPadDesktopMode = platform === "MacIntel" && maxTouchPoints > 1;
+    return isAppleMobile || isiPadDesktopMode;
+  }
+
+  function triggerBrowserDownload(blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    return Promise.resolve("download");
+  }
+
+  function shareExportBlob(blob, filename) {
+    var file;
+    if (!navigator.share || typeof window.File === "undefined") {
+      return Promise.reject(new Error("share-not-supported"));
+    }
+
+    try {
+      file = new window.File([blob], filename, { type: "application/json" });
+    } catch (_) {
+      return Promise.reject(new Error("share-not-supported"));
+    }
+
+    try {
+      if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+        return Promise.reject(new Error("share-not-supported"));
+      }
+    } catch (_) {
+      return Promise.reject(new Error("share-not-supported"));
+    }
+
+    return navigator.share({
+      files: [file]
+    }).then(function () {
+      return "share";
+    });
+  }
+
+  function exportBlob(blob, filename) {
+    if (!shouldUseShareSheetForExport()) {
+      return triggerBrowserDownload(blob, filename);
+    }
+
+    return shareExportBlob(blob, filename).catch(function (shareErr) {
+      if (isUserCancelledExport(shareErr)) throw shareErr;
+      return triggerBrowserDownload(blob, filename);
+    });
+  }
+
   function exportSessionAsJson(sessionId) {
     openHistoryDb().then(function (db) {
       var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readonly");
@@ -1182,39 +1275,23 @@
           return;
         }
 
-        var payload = {
-          exportedAt: new Date().toISOString(),
-          source: "Shelly Status",
-          session: {
-            id: session.id,
-            startedAt: session.startedAt,
-            stoppedAt: session.stoppedAt,
-            sampleCount: session.sampleCount || samples.length
-          },
-          samples: samples.map(function (sample) {
-            return {
-              t: sample.t,
-              netzbezug: sample.netzbezug,
-              solar: sample.solar,
-              verbrauch: sample.verbrauch,
-              netzbezugImportEnergyWh: sample.netzbezugImportEnergyWh,
-              netzbezugExportEnergyWh: sample.netzbezugExportEnergyWh,
-              solarEnergyWh: sample.solarEnergyWh,
-              verbrauchEnergyWh: sample.verbrauchEnergyWh
-            };
-          })
-        };
-
+        var payload = buildSessionExportPayload(session, samples);
         var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-        var url = URL.createObjectURL(blob);
-        var link = document.createElement("a");
-        link.href = url;
-        link.download = "shelly-session-" + session.id + "-" + new Date(session.startedAt).toISOString().replace(/[:.]/g, "-") + ".json";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-        showNote("Session " + formatShortDateTime(session.startedAt) + " wurde exportiert.");
+        var filename = getSessionExportFilename(session);
+
+        exportBlob(blob, filename).then(function (method) {
+          if (method === "share") {
+            showNote("Session " + formatShortDateTime(session.startedAt) + " wurde ueber das Teilen-Menue exportiert.");
+          } else {
+            showNote("Session " + formatShortDateTime(session.startedAt) + " wurde exportiert.");
+          }
+        }).catch(function (err) {
+          if (isUserCancelledExport(err)) {
+            showNote("Export wurde abgebrochen.");
+            return;
+          }
+          showError("Session-Export fehlgeschlagen: " + ((err && err.message) || String(err)));
+        });
       };
 
       transaction.onerror = function () { showError("Session-Export fehlgeschlagen."); };
