@@ -135,6 +135,93 @@
     return value.toFixed(2) + " Wh";
   }
 
+  function readNumberOrNull(value) {
+    if (value === null || value === undefined || value === "") return null;
+    value = Number(value);
+    return isFinite(value) ? value : null;
+  }
+
+  function normalizeStoredSample(sample) {
+    var normalized = {
+      t: Number(sample.t || Date.now()),
+      netzbezug: Number(sample.netzbezug || 0),
+      solar: Number(sample.solar || 0),
+      verbrauch: Number(sample.verbrauch || (Number(sample.netzbezug || 0) - Number(sample.solar || 0))),
+      netzbezugImportEnergyWh: readNumberOrNull(sample.netzbezugImportEnergyWh),
+      netzbezugExportEnergyWh: readNumberOrNull(sample.netzbezugExportEnergyWh),
+      solarEnergyWh: readNumberOrNull(sample.solarEnergyWh),
+      verbrauchEnergyWh: readNumberOrNull(sample.verbrauchEnergyWh)
+    };
+
+    if (
+      normalized.verbrauchEnergyWh === null &&
+      normalized.netzbezugImportEnergyWh !== null &&
+      normalized.netzbezugExportEnergyWh !== null &&
+      normalized.solarEnergyWh !== null
+    ) {
+      normalized.verbrauchEnergyWh = Math.max(0, normalized.netzbezugImportEnergyWh + normalized.solarEnergyWh - normalized.netzbezugExportEnergyWh);
+    }
+
+    return normalized;
+  }
+
+  function deriveEnergySeriesFromPowerSamples(samples) {
+    var derived = samples.map(function (sample) { return Object.assign({}, sample); });
+    var gridImportWh = 0;
+    var gridExportWh = 0;
+    var solarWh = 0;
+    var loadWh = 0;
+
+    for (var i = 0; i < derived.length; i += 1) {
+      if (i > 0) {
+        var previousSample = derived[i - 1];
+        var currentSample = derived[i];
+        var durationHours = Math.max(0, currentSample.t - previousSample.t) / 3600000;
+
+        gridImportWh += Math.max(0, Number(previousSample.netzbezug || 0)) * durationHours;
+        gridExportWh += Math.max(0, -Number(previousSample.netzbezug || 0)) * durationHours;
+        solarWh += Math.max(0, -Number(previousSample.solar || 0)) * durationHours;
+        loadWh += Math.max(0, Number(previousSample.verbrauch || 0)) * durationHours;
+      }
+
+      derived[i].netzbezugImportEnergyWh = gridImportWh;
+      derived[i].netzbezugExportEnergyWh = gridExportWh;
+      derived[i].solarEnergyWh = solarWh;
+      derived[i].verbrauchEnergyWh = loadWh;
+    }
+
+    return derived;
+  }
+
+  function ensureSampleEnergySeries(samples) {
+    var hasStoredEnergy = samples.some(function (sample) {
+      return (
+        sample.netzbezugImportEnergyWh !== null ||
+        sample.netzbezugExportEnergyWh !== null ||
+        sample.solarEnergyWh !== null ||
+        sample.verbrauchEnergyWh !== null
+      );
+    });
+
+    return hasStoredEnergy ? samples : deriveEnergySeriesFromPowerSamples(samples);
+  }
+
+  function normalizeAndSortSamples(samples) {
+    return ensureSampleEnergySeries((samples || []).map(function (sample) {
+      return normalizeStoredSample(sample);
+    }).sort(function (a, b) { return a.t - b.t; }));
+  }
+
+  function getEnergyWindowDelta(startSample, endSample, key) {
+    var startValue;
+    var endValue;
+    if (!startSample || !endSample) return null;
+    startValue = readNumberOrNull(startSample[key]);
+    endValue = readNumberOrNull(endSample[key]);
+    if (startValue === null || endValue === null) return null;
+    return Math.max(0, endValue - startValue);
+  }
+
   function getLoadEnergyWh() {
     return Math.max(0, netzbezugImportEnergyWh + solarEnergyWh - netzbezugExportEnergyWh);
   }
@@ -149,6 +236,18 @@
 
   function formatSolarLegendValue(currentValue, averageValue) {
     return formatLegendValue(currentValue, averageValue) + " | " + formatEnergy(solarEnergyWh);
+  }
+
+  function formatViewLoadLegendValue(stats) {
+    return "Avg " + formatWatts(stats.avgLoad) + " | " + formatEnergy(stats.loadEnergyWh);
+  }
+
+  function formatViewGridLegendValue(stats) {
+    return "Avg " + formatWatts(stats.avgGrid) + " | +" + formatEnergy(stats.gridImportEnergyWh) + " | -" + formatEnergy(stats.gridExportEnergyWh);
+  }
+
+  function formatViewSolarLegendValue(stats) {
+    return "Avg " + formatWatts(stats.avgSolar) + " | " + formatEnergy(stats.solarEnergyWh);
   }
 
   function extractGridEnergyTotals(statusPayload) {
@@ -276,6 +375,7 @@
 
   function getLegendStatsForSamples(samples, startTime, endTime) {
     var relevantSamples = [];
+    var baselineSample = null;
     var latest = null;
     var totals = { load: 0, grid: 0, solar: 0 };
 
@@ -283,6 +383,7 @@
       for (var i = 0; i < samples.length; i += 1) {
         var sample = samples[i];
         var inRange = true;
+        if (typeof startTime === "number" && sample.t <= startTime) baselineSample = sample;
         if (typeof startTime === "number" && sample.t < startTime) inRange = false;
         if (typeof endTime === "number" && sample.t > endTime) inRange = false;
         if (!inRange) continue;
@@ -300,18 +401,31 @@
     }
 
     var count = relevantSamples.length || 1;
+    var energyStartSample = baselineSample || (relevantSamples.length ? relevantSamples[0] : null);
+    var energyEndSample = relevantSamples.length ? relevantSamples[relevantSamples.length - 1] : null;
+
     return {
       load: latest ? latest.verbrauch : 0,
       grid: latest ? latest.netzbezug : 0,
       solar: latest ? latest.solar : 0,
       avgLoad: relevantSamples.length ? totals.load / count : 0,
       avgGrid: relevantSamples.length ? totals.grid / count : 0,
-      avgSolar: relevantSamples.length ? totals.solar / count : 0
+      avgSolar: relevantSamples.length ? totals.solar / count : 0,
+      loadEnergyWh: getEnergyWindowDelta(energyStartSample, energyEndSample, "verbrauchEnergyWh"),
+      gridImportEnergyWh: getEnergyWindowDelta(energyStartSample, energyEndSample, "netzbezugImportEnergyWh"),
+      gridExportEnergyWh: getEnergyWindowDelta(energyStartSample, energyEndSample, "netzbezugExportEnergyWh"),
+      solarEnergyWh: getEnergyWindowDelta(energyStartSample, energyEndSample, "solarEnergyWh")
     };
   }
 
-  function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl, startTime, endTime) {
+  function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl, startTime, endTime, mode) {
     var stats = getLegendStatsForSamples(samples, startTime, endTime);
+    if (mode === "view") {
+      if (loadEl) loadEl.textContent = formatViewLoadLegendValue(stats);
+      if (gridEl) gridEl.textContent = formatViewGridLegendValue(stats);
+      if (solarEl) solarEl.textContent = formatViewSolarLegendValue(stats);
+      return;
+    }
     if (loadEl) loadEl.textContent = formatLoadLegendValue(stats.load, stats.avgLoad);
     if (gridEl) gridEl.textContent = formatGridLegendValue(stats.grid, stats.avgGrid);
     if (solarEl) solarEl.textContent = formatSolarLegendValue(stats.solar, stats.avgSolar);
@@ -437,9 +551,7 @@
         var request = transaction.objectStore(SAMPLES_STORE).index("t").getAll(window.IDBKeyRange.lowerBound(Date.now() - HISTORY_WINDOW_MS));
 
         request.onsuccess = function () {
-          powerHistory = (request.result || []).map(function (sample) {
-            return { t: sample.t, netzbezug: sample.netzbezug, solar: sample.solar, verbrauch: sample.verbrauch };
-          });
+          powerHistory = normalizeAndSortSamples(request.result || []);
         };
         transaction.oncomplete = function () { renderChart(); resolve(powerHistory); };
         transaction.onerror = function () { reject(transaction.error || new Error("Verlauf konnte nicht geladen werden.")); };
@@ -469,14 +581,7 @@
           });
 
           sessionList = sessionList.map(function (session) {
-            var sessionSamples = (samplesBySessionId[session.id] || []).map(function (sample) {
-              return {
-                t: sample.t,
-                netzbezug: sample.netzbezug,
-                solar: sample.solar,
-                verbrauch: sample.verbrauch
-              };
-            });
+            var sessionSamples = normalizeAndSortSamples(samplesBySessionId[session.id] || []);
             var payloadForSize = {
               session: {
                 startedAt: session.startedAt,
@@ -630,7 +735,10 @@
   function renderViewChart() {
     var bounds = getViewBounds();
     if (!bounds) {
-      renderChartFromSamples(viewChartCanvas, selectedViewSamples, viewLegendLoadValueEl, viewLegendGridValueEl, viewLegendSolarValueEl, { xTickLabels: true });
+      renderChartFromSamples(viewChartCanvas, selectedViewSamples, viewLegendLoadValueEl, viewLegendGridValueEl, viewLegendSolarValueEl, {
+        xTickLabels: true,
+        legendMode: "view"
+      });
       return;
     }
 
@@ -646,7 +754,8 @@
       endTime: viewWindowStart + viewWindowMs,
       valueMin: viewYMin,
       valueMax: viewYMax,
-      xTickLabels: true
+      xTickLabels: true,
+      legendMode: "view"
     });
   }
 
@@ -655,7 +764,7 @@
     if (!canvas) return;
     var legendStartTime = options.startTime;
     var legendEndTime = options.endTime;
-    updateLegendValuesForSamples(samples, legendLoadEl, legendGridEl, legendSunEl, legendStartTime, legendEndTime);
+    updateLegendValuesForSamples(samples, legendLoadEl, legendGridEl, legendSunEl, legendStartTime, legendEndTime, options.legendMode);
 
     var ctx = resizeCanvasToDisplaySize(canvas);
     if (!ctx) return;
@@ -830,9 +939,7 @@
             reject(new Error("Session nicht gefunden."));
             return;
           }
-          var samples = (samplesRequest.result || []).map(function (sample) {
-            return { t: sample.t, netzbezug: sample.netzbezug, solar: sample.solar, verbrauch: sample.verbrauch };
-          }).sort(function (a, b) { return a.t - b.t; });
+          var samples = normalizeAndSortSamples(samplesRequest.result || []);
           resolve({ session: sessionRequest.result, samples: samples });
         };
         transaction.onerror = function () { reject(transaction.error || new Error("Session-Daten konnten nicht geladen werden.")); };
@@ -925,14 +1032,7 @@
 
     var startedAt = Number(payload.session.startedAt || Date.now());
     var stoppedAt = payload.session.stoppedAt ? Number(payload.session.stoppedAt) : null;
-    var normalizedSamples = payload.samples.map(function (sample) {
-      return {
-        t: Number(sample.t || Date.now()),
-        netzbezug: Number(sample.netzbezug || 0),
-        solar: Number(sample.solar || 0),
-        verbrauch: Number(sample.verbrauch || (Number(sample.netzbezug || 0) - Number(sample.solar || 0)))
-      };
-    }).sort(function (a, b) { return a.t - b.t; });
+    var normalizedSamples = normalizeAndSortSamples(payload.samples);
 
     openHistoryDb().then(function (db) {
       var transaction = db.transaction([SESSIONS_STORE, SAMPLES_STORE], "readwrite");
@@ -940,11 +1040,11 @@
       var sampleStore = transaction.objectStore(SAMPLES_STORE);
       var sessionId;
 
-      sessionStore.add({
-        startedAt: startedAt,
-        stoppedAt: stoppedAt,
-        sampleCount: normalizedSamples.length
-      }).onsuccess = function (event) {
+        sessionStore.add({
+          startedAt: startedAt,
+          stoppedAt: stoppedAt,
+          sampleCount: normalizedSamples.length
+        }).onsuccess = function (event) {
         sessionId = event.target.result;
         normalizedSamples.forEach(function (sample) {
           sampleStore.add({
@@ -952,7 +1052,11 @@
             t: sample.t,
             netzbezug: sample.netzbezug,
             solar: sample.solar,
-            verbrauch: sample.verbrauch
+            verbrauch: sample.verbrauch,
+            netzbezugImportEnergyWh: sample.netzbezugImportEnergyWh,
+            netzbezugExportEnergyWh: sample.netzbezugExportEnergyWh,
+            solarEnergyWh: sample.solarEnergyWh,
+            verbrauchEnergyWh: sample.verbrauchEnergyWh
           });
         });
       };
@@ -1048,7 +1152,11 @@
       t: sample.t,
       netzbezug: sample.netzbezug,
       solar: sample.solar,
-      verbrauch: sample.verbrauch
+      verbrauch: sample.verbrauch,
+      netzbezugImportEnergyWh: sample.netzbezugImportEnergyWh,
+      netzbezugExportEnergyWh: sample.netzbezugExportEnergyWh,
+      solarEnergyWh: sample.solarEnergyWh,
+      verbrauchEnergyWh: sample.verbrauchEnergyWh
     };
 
     openHistoryDb().then(function (db) {
@@ -1068,7 +1176,7 @@
 
       transaction.oncomplete = function () {
         var session = sessionRequest.result;
-        var samples = samplesRequest.result || [];
+        var samples = normalizeAndSortSamples(samplesRequest.result || []);
         if (!session) {
           showError("Session nicht gefunden.");
           return;
@@ -1088,7 +1196,11 @@
               t: sample.t,
               netzbezug: sample.netzbezug,
               solar: sample.solar,
-              verbrauch: sample.verbrauch
+              verbrauch: sample.verbrauch,
+              netzbezugImportEnergyWh: sample.netzbezugImportEnergyWh,
+              netzbezugExportEnergyWh: sample.netzbezugExportEnergyWh,
+              solarEnergyWh: sample.solarEnergyWh,
+              verbrauchEnergyWh: sample.verbrauchEnergyWh
             };
           })
         };
@@ -1163,7 +1275,16 @@
     if (!currentSessionId) return;
 
     var now = Date.now();
-    var sample = { t: now, netzbezug: netzbezug, solar: solar, verbrauch: netzbezug - solar };
+    var sample = {
+      t: now,
+      netzbezug: netzbezug,
+      solar: solar,
+      verbrauch: netzbezug - solar,
+      netzbezugImportEnergyWh: netzbezugImportEnergyWh,
+      netzbezugExportEnergyWh: netzbezugExportEnergyWh,
+      solarEnergyWh: solarEnergyWh,
+      verbrauchEnergyWh: getLoadEnergyWh()
+    };
     powerHistory.push(sample);
     pruneHistory(now);
     renderChart();
