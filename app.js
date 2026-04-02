@@ -4,6 +4,9 @@
 
   var WS_WAIT_MS = 15000;
   var HISTORY_WINDOW_MS = 120000;
+  var HISTORY_SAMPLE_INTERVAL_MS = 1000;
+  var DATA_WATCHDOG_TIMEOUT_MS = 15000;
+  var DATA_WATCHDOG_CHECK_MS = 2000;
   var SHELLY1_BASE_URL = "http://192.168.178.52";
   var SHELLY2_BASE_URL = "http://192.168.178.53";
   var DB_NAME = "shelly-history-db";
@@ -57,6 +60,7 @@
   var updateIntervalId = null;
   var updateIntervalId2 = null;
   var chartRefreshIntervalId = null;
+  var dataWatchdogIntervalId = null;
   var historyDbPromise = null;
   var userClosed = false;
   var netzbezug = 0;
@@ -69,6 +73,10 @@
   var prevSolarTotalWh = null;
   var powerHistory = [];
   var currentSessionId = null;
+  var currentSessionSampleCount = 0;
+  var lastPersistedSampleAt = 0;
+  var lastIncomingValueAt = 0;
+  var dataWatchdogTriggered = false;
   var sessionList = [];
   var storageStats = { sessions: 0, samples: 0, lastStart: null };
   var selectedViewSamples = [];
@@ -493,6 +501,33 @@
     };
   }
 
+  function getPlotSamplesForTimeRange(samples, startTime, endTime, maxPoints) {
+    var rangeData = getSamplesForTimeRange(samples, startTime, endTime);
+    var plotSamples = rangeData.relevantSamples.slice();
+
+    if (rangeData.baselineSample && (!plotSamples.length || plotSamples[0] !== rangeData.baselineSample)) {
+      plotSamples.unshift(rangeData.baselineSample);
+    }
+
+    return reduceSamplesForPlot(plotSamples, maxPoints);
+  }
+
+  function reduceSamplesForPlot(samples, maxPoints) {
+    if (!samples.length || !isFinite(maxPoints) || maxPoints < 2 || samples.length <= maxPoints) return samples;
+
+    var reduced = [];
+    var lastIndex = samples.length - 1;
+    var step = lastIndex / (maxPoints - 1);
+
+    for (var i = 0; i < maxPoints; i += 1) {
+      var sample = samples[Math.min(lastIndex, Math.round(i * step))];
+      if (!reduced.length || reduced[reduced.length - 1] !== sample) reduced.push(sample);
+    }
+
+    if (reduced[reduced.length - 1] !== samples[lastIndex]) reduced.push(samples[lastIndex]);
+    return reduced;
+  }
+
   function updateLegendValuesForSamples(samples, loadEl, gridEl, solarEl, startTime, endTime, mode) {
     var stats = getLegendStatsForSamples(samples, startTime, endTime);
     if (mode === "view") {
@@ -655,11 +690,14 @@
 
           sessionList = sessionList.map(function (session) {
             var sessionSamples = normalizeAndSortSamples(samplesBySessionId[session.id] || []);
+            session.sampleCount = sessionSamples.length;
+            session.firstSampleAt = sessionSamples.length ? sessionSamples[0].t : null;
+            session.lastSampleAt = sessionSamples.length ? sessionSamples[sessionSamples.length - 1].t : null;
             var payloadForSize = {
               session: {
                 startedAt: session.startedAt,
                 stoppedAt: session.stoppedAt,
-                sampleCount: session.sampleCount || sessionSamples.length
+                sampleCount: session.sampleCount
               },
               samples: sessionSamples
             };
@@ -696,6 +734,7 @@
       var isActive = !session.stoppedAt;
       var sampleCount = session.sampleCount || 0;
       var stopText = isActive ? "laeuft noch" : formatLongDateTime(session.stoppedAt);
+      var durationEnd = session.stoppedAt || session.lastSampleAt;
       var storageText = formatBytes(session.storageBytes || 0);
 
       article.className = "session-card";
@@ -707,7 +746,7 @@
         '<div class="session-meta-grid">' +
           '<p><span>Start</span><strong>' + formatLongDateTime(session.startedAt) + '</strong></p>' +
           '<p><span>Stop</span><strong>' + stopText + '</strong></p>' +
-          '<p><span>Dauer</span><strong>' + formatDuration(session.startedAt, session.stoppedAt) + '</strong></p>' +
+          '<p><span>Dauer</span><strong>' + formatDuration(session.startedAt, durationEnd) + '</strong></p>' +
           '<p><span>Messpunkte</span><strong>' + sampleCount + '</strong></p>' +
           '<p><span>Speicher</span><strong>' + storageText + '</strong></p>' +
         '</div>' +
@@ -804,7 +843,8 @@
     var plotHeight = height - paddingTop - paddingBottom;
     var startTime = typeof options.startTime === "number" ? options.startTime : (samples.length ? samples[0].t : Date.now());
     var endTime = typeof options.endTime === "number" ? options.endTime : (samples.length ? samples[samples.length - 1].t : (startTime + 1));
-    var energySamples = buildRelativeEnergyChartSamples(samples, startTime, endTime);
+    var maxPlotPoints = Math.max(200, Math.round(plotWidth * 2));
+    var energySamples = reduceSamplesForPlot(buildRelativeEnergyChartSamples(samples, startTime, endTime), maxPlotPoints);
     var maxValue = 0;
     var niceStep;
     var range;
@@ -1074,12 +1114,20 @@
     var paddingRight = 8;
     var plotWidth = width - paddingLeft - paddingRight;
     var plotHeight = height - paddingTop - paddingBottom;
+    var startTime = options.startTime;
+    var endTime = options.endTime;
+    if (typeof startTime !== "number" || typeof endTime !== "number") {
+      startTime = samples.length ? samples[0].t : Date.now();
+      endTime = samples.length ? samples[samples.length - 1].t : (startTime + 1);
+    }
+    var maxPlotPoints = Math.max(200, Math.round(plotWidth * 2));
+    var plotSamples = getPlotSamplesForTimeRange(samples, startTime, endTime, maxPlotPoints);
 
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
     ctx.fillRect(0, 0, width, height);
 
-    if (!samples.length) {
+    if (!plotSamples.length) {
       ctx.fillStyle = "#8b9aab";
       ctx.font = Math.round(14 * (window.devicePixelRatio || 1)) + "px sans-serif";
       ctx.textAlign = "center";
@@ -1089,8 +1137,8 @@
 
     var computedMinValue = Infinity;
     var computedMaxValue = -Infinity;
-    for (var i = 0; i < samples.length; i += 1) {
-      var sample = samples[i];
+    for (var i = 0; i < plotSamples.length; i += 1) {
+      var sample = plotSamples[i];
       computedMinValue = Math.min(computedMinValue, sample.netzbezug, sample.solar, sample.verbrauch);
       computedMaxValue = Math.max(computedMaxValue, sample.netzbezug, sample.solar, sample.verbrauch);
     }
@@ -1180,16 +1228,10 @@
       ctx.fillText(labelValue.toFixed(0) + " W", 6, Math.max(12, labelY - 4));
     }
 
-    var startTime = options.startTime;
-    var endTime = options.endTime;
-    if (typeof startTime !== "number" || typeof endTime !== "number") {
-      startTime = samples[0].t;
-      endTime = samples[samples.length - 1].t;
-    }
     if (endTime === startTime) endTime = startTime + 1;
-    drawSeriesForRange(ctx, plotWidth, plotHeight, samples, startTime, endTime, minValue, range, "#ff9f43", "netzbezug");
-    drawSeriesForRange(ctx, plotWidth, plotHeight, samples, startTime, endTime, minValue, range, "#18a56b", "solar");
-    drawSeriesForRange(ctx, plotWidth, plotHeight, samples, startTime, endTime, minValue, range, "#2f7cf6", "verbrauch");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, plotSamples, startTime, endTime, minValue, range, "#ff9f43", "netzbezug");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, plotSamples, startTime, endTime, minValue, range, "#18a56b", "solar");
+    drawSeriesForRange(ctx, plotWidth, plotHeight, plotSamples, startTime, endTime, minValue, range, "#2f7cf6", "verbrauch");
 
     if (options.xTickLabels) {
       var xTickStep = Math.max(500, getNiceStep((endTime - startTime) / 6));
@@ -1222,7 +1264,8 @@
       if (!session) {
         viewSubtitleEl.textContent = "Waehle in Historie einen Abschnitt oder importiere eine JSON-Datei.";
       } else {
-        viewSubtitleEl.textContent = formatDuration(session.startedAt, session.stoppedAt) + " | " + (samples ? samples.length : 0) + " Messpunkte";
+        var durationEnd = session.stoppedAt || (samples && samples.length ? samples[samples.length - 1].t : null);
+        viewSubtitleEl.textContent = formatDuration(session.startedAt, durationEnd) + " | " + (samples ? samples.length : 0) + " Messpunkte";
       }
     }
   }
@@ -1379,7 +1422,13 @@
         var transaction = db.transaction(SESSIONS_STORE, "readwrite");
         var request = transaction.objectStore(SESSIONS_STORE).add({ startedAt: Date.now(), stoppedAt: null, sampleCount: 0 });
 
-        request.onsuccess = function () { currentSessionId = request.result; };
+        request.onsuccess = function () {
+          currentSessionId = request.result;
+          currentSessionSampleCount = 0;
+          lastPersistedSampleAt = 0;
+          lastIncomingValueAt = Date.now();
+          dataWatchdogTriggered = false;
+        };
         transaction.oncomplete = function () {
           loadStorageStats();
           loadSessions();
@@ -1406,6 +1455,7 @@
           var session = getRequest.result;
           if (!session) return;
           session.stoppedAt = Date.now();
+          session.sampleCount = currentSessionSampleCount || session.sampleCount || 0;
           store.put(session);
         };
         transaction.oncomplete = function () {
@@ -1417,29 +1467,11 @@
       });
     }).catch(function (err) {
       appendNote("Session konnte nicht sauber beendet werden: " + ((err && err.message) || String(err)));
-    });
-  }
-
-  function incrementSessionSampleCount(sessionId) {
-    if (!sessionId) return;
-
-    openHistoryDb().then(function (db) {
-      var transaction = db.transaction(SESSIONS_STORE, "readwrite");
-      var store = transaction.objectStore(SESSIONS_STORE);
-      var request = store.get(sessionId);
-
-      request.onsuccess = function () {
-        var session = request.result;
-        if (!session) return;
-        session.sampleCount = (session.sampleCount || 0) + 1;
-        store.put(session);
-      };
-      transaction.oncomplete = function () {
-        loadStorageStats();
-        loadSessions();
-      };
-    }).catch(function (err) {
-      appendNote("Session-Zaehler konnte nicht aktualisiert werden: " + ((err && err.message) || String(err)));
+    }).then(function () {
+      currentSessionSampleCount = 0;
+      lastPersistedSampleAt = 0;
+      lastIncomingValueAt = 0;
+      dataWatchdogTriggered = false;
     });
   }
 
@@ -1461,7 +1493,7 @@
     openHistoryDb().then(function (db) {
       var transaction = db.transaction(SAMPLES_STORE, "readwrite");
       transaction.objectStore(SAMPLES_STORE).add(payload);
-      transaction.oncomplete = function () { incrementSessionSampleCount(payload.sessionId); };
+      transaction.oncomplete = function () { currentSessionSampleCount += 1; };
       transaction.onerror = function () { appendNote("Verlauf konnte nicht gespeichert werden."); };
     }).catch(function (err) {
       appendNote("Verlauf konnte nicht gespeichert werden: " + ((err && err.message) || String(err)));
@@ -1682,6 +1714,7 @@
     if (!currentSessionId) return;
 
     var now = Date.now();
+    markIncomingValue();
     var sample = {
       t: now,
       netzbezug: netzbezug,
@@ -1695,6 +1728,8 @@
     powerHistory.push(sample);
     pruneHistory(now);
     renderChart();
+    if (lastPersistedSampleAt && (now - lastPersistedSampleAt) < HISTORY_SAMPLE_INTERVAL_MS) return;
+    lastPersistedSampleAt = now;
     persistHistoryPoint(sample);
   }
 
@@ -1764,10 +1799,40 @@
     }
   }
 
+  function stopDataWatchdog() {
+    if (dataWatchdogIntervalId) {
+      clearInterval(dataWatchdogIntervalId);
+      dataWatchdogIntervalId = null;
+    }
+    lastIncomingValueAt = 0;
+    dataWatchdogTriggered = false;
+  }
+
+  function markIncomingValue() {
+    lastIncomingValueAt = Date.now();
+    dataWatchdogTriggered = false;
+  }
+
+  function startDataWatchdog() {
+    stopDataWatchdog();
+    lastIncomingValueAt = Date.now();
+    dataWatchdogIntervalId = setInterval(function () {
+      if (!currentSessionId || userClosed || dataWatchdogTriggered || !lastIncomingValueAt) return;
+      if ((Date.now() - lastIncomingValueAt) < DATA_WATCHDOG_TIMEOUT_MS) return;
+
+      dataWatchdogTriggered = true;
+      showError("Keine Messwerte mehr seit " + Math.round(DATA_WATCHDOG_TIMEOUT_MS / 1000) + " s. Session wurde automatisch beendet.");
+      appendNote("Watchdog: Session wurde automatisch gestoppt, weil keine neuen Werte mehr ankamen.");
+      setOut("-- Keine neuen Messwerte --");
+      disconnect();
+    }, DATA_WATCHDOG_CHECK_MS);
+  }
+
   function disconnect() {
     userClosed = true;
     clearWaitTimer();
     clearWaitTimer2();
+    stopDataWatchdog();
 
     if (updateIntervalId) {
       clearInterval(updateIntervalId);
@@ -1812,6 +1877,7 @@
 
     startSession().then(function () {
       userClosed = false;
+      startDataWatchdog();
       var base = normalizeBase(SHELLY1_BASE_URL);
       var wsUrl = httpBaseToWsRpcUrl(base);
 
@@ -2013,6 +2079,7 @@
       clearInterval(chartRefreshIntervalId);
       chartRefreshIntervalId = null;
     }
+    stopDataWatchdog();
     if (wsConn) {
       try { wsConn.close(); } catch (_) {}
     }
