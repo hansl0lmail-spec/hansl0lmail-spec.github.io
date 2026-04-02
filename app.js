@@ -1951,31 +1951,6 @@
     });
   }
 
-  function removeLegacyPwaArtifacts() {
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", function () {
-        navigator.serviceWorker.getRegistrations().then(function (registrations) {
-          return Promise.all(registrations.map(function (registration) {
-            return registration.unregister();
-          }));
-        }).catch(function () {
-          return [];
-        });
-      });
-    }
-
-    if ("caches" in window) {
-      window.addEventListener("load", function () {
-        caches.keys().then(function (keys) {
-          return Promise.all(keys.map(function (key) {
-            return caches.delete(key);
-          }));
-        }).catch(function () {
-          return [];
-        });
-      });
-    }
-  }
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     connect();
@@ -2493,7 +2468,6 @@
   }
 
   showNote("Shelly 192.168.178.52 + 192.168.178.53 fest konfiguriert.");
-  removeLegacyPwaArtifacts();
   setActiveTab("dashboard");
   updateStorageUi();
   updateHistoryStorageUsageUi(0);
