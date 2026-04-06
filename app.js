@@ -563,7 +563,7 @@
   }
 
   function applyTheme(themeName) {
-    var nextTheme = themeName === "light" || themeName === "mid" ? themeName : "dark";
+    var nextTheme = themeName === "light" || themeName === "dim" ? themeName : "dark";
     document.body.setAttribute("data-theme", nextTheme);
 
     themeOptionButtons.forEach(function (button) {
