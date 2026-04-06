@@ -6,6 +6,7 @@
   var HISTORY_WINDOW_MS = 120000;
   var HISTORY_SAMPLE_INTERVAL_MS = 1000;
   var SHELLY_POLL_INTERVAL_MS = 500;
+  var SHELLY_EVENT_KEEPALIVE_MS = 5000;
   var EVENT_RECORD_DEBOUNCE_MS = 180;
   var DATA_WATCHDOG_TIMEOUT_MS = 15000;
   var DATA_WATCHDOG_CHECK_MS = 2000;
@@ -206,6 +207,10 @@
     connection.send(JSON.stringify({ id: 1, src: sourceId, method: "Shelly.GetStatus" }));
   }
 
+  function shouldRecordEventSample(previousValue, nextValue) {
+    return historySamplingMode === "fixed" || previousValue !== nextValue;
+  }
+
   function syncGridSamplingTransport() {
     if (updateIntervalId) {
       clearInterval(updateIntervalId);
@@ -213,10 +218,9 @@
     }
     if (!wsConn || wsConn.readyState !== WebSocket.OPEN) return;
     sendShellyStatusRequest(wsConn, "user_1");
-    if (historySamplingMode !== "fixed") return;
     updateIntervalId = setInterval(function () {
       sendShellyStatusRequest(wsConn, "user_1");
-    }, SHELLY_POLL_INTERVAL_MS);
+    }, historySamplingMode === "fixed" ? SHELLY_POLL_INTERVAL_MS : SHELLY_EVENT_KEEPALIVE_MS);
   }
 
   function syncSolarSamplingTransport() {
@@ -226,10 +230,9 @@
     }
     if (!wsConn2 || wsConn2.readyState !== WebSocket.OPEN) return;
     sendShellyStatusRequest(wsConn2, "user_2");
-    if (historySamplingMode !== "fixed") return;
     updateIntervalId2 = setInterval(function () {
       sendShellyStatusRequest(wsConn2, "user_2");
-    }, SHELLY_POLL_INTERVAL_MS);
+    }, historySamplingMode === "fixed" ? SHELLY_POLL_INTERVAL_MS : SHELLY_EVENT_KEEPALIVE_MS);
   }
 
   function syncSamplingTransport() {
@@ -2099,6 +2102,8 @@
   function applyMessage(text) {
     var obj;
     var statusPayload;
+    var previousNetzbezug;
+    var nextNetzbezug;
     try {
       obj = JSON.parse(text);
     } catch (_) {
@@ -2110,17 +2115,21 @@
     updateGridEnergyFromStatus(statusPayload);
 
     if (obj.result && obj.result["em:0"] && obj.result["em:0"].total_act_power !== undefined) {
-      netzbezug = Number(obj.result["em:0"].total_act_power);
-      powerValueEl.textContent = netzbezug.toFixed(1);
+      previousNetzbezug = netzbezug;
+      nextNetzbezug = Number(obj.result["em:0"].total_act_power);
+      netzbezug = nextNetzbezug;
+      powerValueEl.textContent = nextNetzbezug.toFixed(1);
       updateVerbrauch();
       markIncomingValue();
-      requestHistoryRecord();
+      if (shouldRecordEventSample(previousNetzbezug, nextNetzbezug)) requestHistoryRecord();
     } else if (obj.params && obj.params["em:0"] && obj.params["em:0"].total_act_power !== undefined) {
-      netzbezug = Number(obj.params["em:0"].total_act_power);
-      powerValueEl.textContent = netzbezug.toFixed(1);
+      previousNetzbezug = netzbezug;
+      nextNetzbezug = Number(obj.params["em:0"].total_act_power);
+      netzbezug = nextNetzbezug;
+      powerValueEl.textContent = nextNetzbezug.toFixed(1);
       updateVerbrauch();
       markIncomingValue();
-      requestHistoryRecord();
+      if (shouldRecordEventSample(previousNetzbezug, nextNetzbezug)) requestHistoryRecord();
     }
 
     if (obj.id == 1 && (obj.result !== undefined || obj.error !== undefined)) {
@@ -2328,23 +2337,29 @@
 
     wsConn2.addEventListener("message", function (ev) {
       var text = typeof ev.data === "string" ? ev.data : "";
+      var previousSolar;
+      var nextSolar;
       if (!text) return;
       try {
         var obj = JSON.parse(text);
         var statusPayload = getStatusPayload(obj);
         updateSolarEnergyFromStatus(statusPayload);
         if (obj.result && obj.result["pm1:0"] && obj.result["pm1:0"].apower !== undefined) {
-          solar = Number(obj.result["pm1:0"].apower);
-          powerValueEl2.textContent = solar.toFixed(1);
+          previousSolar = solar;
+          nextSolar = Number(obj.result["pm1:0"].apower);
+          solar = nextSolar;
+          powerValueEl2.textContent = nextSolar.toFixed(1);
           updateVerbrauch();
           markIncomingValue();
-          requestHistoryRecord();
+          if (shouldRecordEventSample(previousSolar, nextSolar)) requestHistoryRecord();
         } else if (obj.params && obj.params["pm1:0"] && obj.params["pm1:0"].apower !== undefined) {
-          solar = Number(obj.params["pm1:0"].apower);
-          powerValueEl2.textContent = solar.toFixed(1);
+          previousSolar = solar;
+          nextSolar = Number(obj.params["pm1:0"].apower);
+          solar = nextSolar;
+          powerValueEl2.textContent = nextSolar.toFixed(1);
           updateVerbrauch();
           markIncomingValue();
-          requestHistoryRecord();
+          if (shouldRecordEventSample(previousSolar, nextSolar)) requestHistoryRecord();
         }
       } catch (_) {}
     });
